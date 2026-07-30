@@ -41,11 +41,17 @@ class MergeRequestDiff:
 def parse_new_lines(diff_text: str) -> tuple[int, ...]:
     """Return line numbers on the new side that this diff adds."""
     lines: list[int] = []
-    current = 0
+    current: int | None = None
     for raw in diff_text.splitlines():
         hunk = HUNK_RE.match(raw)
         if hunk:
             current = int(hunk.group(1))
+            continue
+        # Ignore lines until first hunk is encountered
+        if current is None:
+            continue
+        # Ignore backslash marker lines (e.g., "\ No newline at end of file")
+        if raw.startswith("\\"):
             continue
         if raw.startswith("+"):
             lines.append(current)

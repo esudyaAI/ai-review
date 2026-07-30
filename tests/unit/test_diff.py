@@ -69,3 +69,21 @@ def test_render_diff_block_marks_files_and_is_stable():
     block = render_diff_block(mr)
     assert block.startswith("### a.go")
     assert render_diff_block(mr) == block
+
+
+def test_parse_new_lines_ignores_hunk_with_only_deletions():
+    # Hunk with only deletions should return empty tuple
+    diff = "@@ -5,3 +5,0 @@\n-a\n-b\n-c\n"
+    assert parse_new_lines(diff) == ()
+
+
+def test_parse_new_lines_ignores_file_headers_before_first_hunk():
+    # Diff with --- a/path and +++ b/path headers should not count them as additions
+    diff = "--- a/x.go\n+++ b/x.go\n@@ -1,1 +1,2 @@\n x\n+y\n"
+    assert parse_new_lines(diff) == (2,)
+
+
+def test_parse_new_lines_ignores_no_newline_marker():
+    # Diff with "\ No newline at end of file" should ignore it
+    diff = "@@ -1,2 +1,2 @@\n-a\n+A\n\\ No newline at end of file\n"
+    assert parse_new_lines(diff) == (1,)
