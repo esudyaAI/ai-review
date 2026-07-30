@@ -1,0 +1,12 @@
+{
+  "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "head_commit_sha": "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh",
+  "start_commit_sha": "ssssssssssssssssssssssssssssssssssssssss",
+  "diffs": [
+    {
+      "old_path": "internal/billing/config.go",
+      "new_path": "internal/billing/config.go",
+      "diff": "@@ -10,3 +10,5 @@\n ctx := context.Background()\n+resp, err := client.Charge(ctx)\n+_ = resp\n return nil\n"
+    }
+  ]
+}
