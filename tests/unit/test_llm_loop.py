@@ -130,3 +130,51 @@ def test_arguments_are_parsed_from_json_string(tools):
         )
     ])
     assert ReviewLoop(provider, tools).run("system", "user") == []
+
+
+def test_loop_serves_sibling_tool_calls_when_submit_in_same_batch_is_invalid(tools):
+    broken = {"category": "bug"}
+    provider = ScriptedProvider([
+        ProviderResponse(
+            tool_calls=(
+                ToolCall(
+                    id="s1",
+                    name="submit_findings",
+                    arguments={"summary": "итог", "findings": [broken]},
+                ),
+                ToolCall(id="t1", name="list_files", arguments={"path_glob": "internal/*"}),
+            ),
+            text=None,
+        ),
+        submit_call([VALID_FINDING]),
+    ])
+    findings = ReviewLoop(provider, tools).run("system", "user")
+    assert len(findings) == 1
+
+    tool_messages = {
+        m["tool_call_id"]: m["content"] for m in provider.calls[-1] if m.get("role") == "tool"
+    }
+    assert "s1" in tool_messages
+    assert "t1" in tool_messages
+    assert "internal/billing.go" in tool_messages["t1"]
+
+
+def test_loop_reports_invalid_argument_type_to_the_model(tools):
+    provider = ScriptedProvider([
+        ProviderResponse(
+            tool_calls=(
+                ToolCall(
+                    id="t1",
+                    name="read_file",
+                    arguments={"path": "internal/billing.go", "offset": "abc"},
+                ),
+            ),
+            text=None,
+        ),
+        submit_call([]),
+    ])
+    findings = ReviewLoop(provider, tools).run("system", "user")
+    assert findings == []
+
+    tool_messages = [m for m in provider.calls[-1] if m.get("role") == "tool"]
+    assert "invalid argument" in tool_messages[0]["content"]

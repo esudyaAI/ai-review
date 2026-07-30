@@ -54,6 +54,10 @@ class ReviewLoop:
                     schema_retries += 1
                     messages.append(_assistant_message(response.tool_calls))
                     messages.append(_tool_message(submit.id, f"Invalid payload: {exc}. Retry."))
+                    for call in response.tool_calls:
+                        if call.id == submit.id:
+                            continue
+                        messages.append(_tool_message(call.id, self._serve(call)))
                     continue
 
             messages.append(_assistant_message(response.tool_calls))
@@ -69,6 +73,8 @@ class ReviewLoop:
             return f"Tool error: {exc}"
         except KeyError as exc:
             return f"Tool error: missing argument {exc}"
+        except (ValueError, TypeError) as exc:
+            return f"Tool error: invalid argument ({exc})"
 
 
 def _assistant_message(calls) -> dict:
