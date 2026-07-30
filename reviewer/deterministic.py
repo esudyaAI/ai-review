@@ -21,7 +21,11 @@ PROCESS_TIMEOUT_SECONDS = 300
 def parse_gitleaks(report: str, changed_files: Sequence[str]) -> list[Finding]:
     changed = set(changed_files)
     findings: list[Finding] = []
-    for item in json.loads(report or "[]") or []:
+    try:
+        items = json.loads(report or "[]") or []
+    except json.JSONDecodeError:
+        return []
+    for item in items:
         path = item.get("File", "")
         if path not in changed:
             continue
@@ -50,7 +54,10 @@ def parse_gitleaks(report: str, changed_files: Sequence[str]) -> list[Finding]:
 
 def parse_golangci(report: str, changed_files: Sequence[str]) -> list[Finding]:
     changed = set(changed_files)
-    payload = json.loads(report or "{}") or {}
+    try:
+        payload = json.loads(report or "{}") or {}
+    except json.JSONDecodeError:
+        return []
     findings: list[Finding] = []
     for issue in payload.get("Issues") or []:
         position = issue.get("Pos") or {}
