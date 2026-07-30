@@ -97,3 +97,44 @@ def test_keep_blocking_drops_low_confidence():
     ]
     kept = keep_blocking(findings)
     assert [f.confidence for f in kept] == ["high"]
+
+
+@pytest.mark.parametrize(
+    "field,invalid_value",
+    [
+        ("title", None),
+        ("title", 123),
+        ("problem", None),
+        ("problem", 456),
+        ("evidence", None),
+        ("evidence", []),
+        ("suggested_fix", None),
+        ("suggested_fix", {"key": "value"}),
+        ("file", None),
+        ("file", 789),
+        ("category", None),
+        ("category", 999),
+        ("confidence", None),
+        ("confidence", 111),
+    ],
+)
+def test_parse_findings_rejects_non_string_fields(field, invalid_value):
+    payload = {
+        "summary": "Test",
+        "findings": [
+            {
+                "category": "bug",
+                "file": "test.go",
+                "line_start": 1,
+                "line_end": 1,
+                "title": "Test",
+                "problem": "Test",
+                "evidence": "Test",
+                "suggested_fix": "Test",
+                "confidence": "high",
+            }
+        ],
+    }
+    payload["findings"][0][field] = invalid_value
+    with pytest.raises(FindingsSchemaError):
+        parse_findings(payload)

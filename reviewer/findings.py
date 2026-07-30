@@ -71,6 +71,8 @@ def parse_findings(payload: dict) -> list[Finding]:
     if not isinstance(raw_findings, list):
         raise FindingsSchemaError("'findings' must be a list")
 
+    string_fields = {"title", "problem", "evidence", "suggested_fix", "file", "category", "confidence"}
+
     findings: list[Finding] = []
     for index, raw in enumerate(raw_findings):
         if not isinstance(raw, dict):
@@ -78,6 +80,12 @@ def parse_findings(payload: dict) -> list[Finding]:
         missing = [field for field in REQUIRED_FIELDS if field not in raw]
         if missing:
             raise FindingsSchemaError(f"finding #{index} misses fields: {missing}")
+
+        # Validate string fields
+        for field in string_fields:
+            if field in raw and not isinstance(raw[field], str):
+                raise FindingsSchemaError(f"finding #{index} field '{field}' must be a string, got {type(raw[field]).__name__}")
+
         if raw["category"] not in CATEGORIES:
             raise FindingsSchemaError(f"finding #{index} has unknown category {raw['category']}")
         if raw["confidence"] not in CONFIDENCES:
@@ -90,13 +98,13 @@ def parse_findings(payload: dict) -> list[Finding]:
         findings.append(
             Finding(
                 category=raw["category"],
-                file=str(raw["file"]),
+                file=raw["file"],
                 line_start=line_start,
                 line_end=line_end,
-                title=str(raw["title"]),
-                problem=str(raw["problem"]),
-                evidence=str(raw["evidence"]),
-                suggested_fix=str(raw["suggested_fix"]),
+                title=raw["title"],
+                problem=raw["problem"],
+                evidence=raw["evidence"],
+                suggested_fix=raw["suggested_fix"],
                 confidence=raw["confidence"],
             )
         )
