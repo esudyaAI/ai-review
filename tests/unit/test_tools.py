@@ -83,3 +83,16 @@ def test_grep_rejects_traversal_glob(repo):
 def test_list_files_rejects_absolute_glob(repo):
     with pytest.raises(ToolError):
         repo.list_files("/etc/*")
+
+
+def test_grep_ignores_symlink_to_denied_file_with_innocuous_name(repo):
+    (repo.root / "safe_looking.txt").symlink_to(repo.root / ".env")
+    assert repo.grep("STRIPE_SECRET_KEY", "**/*") == []
+    assert "safe_looking.txt" not in repo.list_files("**/*")
+
+
+def test_grep_ignores_symlink_pointing_outside_root(repo):
+    outside = repo.root.parent / "outside.txt"
+    (repo.root / "escape_link.txt").symlink_to(outside)
+    assert repo.grep("secret outside", "**/*") == []
+    assert "escape_link.txt" not in repo.list_files("**/*")

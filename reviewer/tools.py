@@ -62,7 +62,7 @@ class RepoTools:
                 continue
             if not resolved.is_relative_to(self.root):
                 continue
-            if not p.is_file() or self._is_denied(p):
+            if not resolved.is_file() or self._is_denied(resolved):
                 continue
             candidates.append(p)
         return candidates
