@@ -82,6 +82,34 @@ def test_list_discussions_maps_notes(client):
 
 
 @respx.mock
+def test_list_discussions_follows_link_header_pagination(client):
+    page1_url = f"{API}/projects/{PROJECT}/merge_requests/7/discussions?per_page=100"
+    page2_url = f"{API}/projects/{PROJECT}/merge_requests/7/discussions?per_page=100&page=2"
+    respx.get(page1_url).mock(
+        return_value=httpx.Response(
+            200,
+            json=[{"id": "d1", "notes": []}],
+            headers={"Link": f'<{page2_url}>; rel="next"'},
+        )
+    )
+    respx.get(page2_url).mock(
+        return_value=httpx.Response(200, json=[{"id": "d2", "notes": []}])
+    )
+    discussions = client.list_discussions(7)
+    assert [d.id for d in discussions] == ["d1", "d2"]
+
+
+@respx.mock
+def test_list_discussions_stops_when_no_link_header(client):
+    route = respx.get(f"{API}/projects/{PROJECT}/merge_requests/7/discussions?per_page=100").mock(
+        return_value=httpx.Response(200, json=[{"id": "d1", "notes": []}])
+    )
+    discussions = client.list_discussions(7)
+    assert [d.id for d in discussions] == ["d1"]
+    assert route.call_count == 1
+
+
+@respx.mock
 def test_create_discussion_positions_the_comment(client):
     payload = json.loads((FIXTURES / "mr_diffs.json").read_text(encoding="utf-8"))
     respx.get(f"{API}/projects/{PROJECT}/merge_requests/7/diffs?per_page=100").mock(

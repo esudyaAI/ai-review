@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 
 import httpx
@@ -10,6 +11,7 @@ from reviewer.diff import FileDiff, MergeRequestDiff, parse_new_lines
 from reviewer.findings import Finding, extract_marker, render_comment
 
 PAGE_SIZE = 100
+MAX_PAGES = 20
 
 
 @dataclass(frozen=True)
@@ -61,8 +63,37 @@ class GitLabClient:
         response.raise_for_status()
         return response.json()
 
+    def _get_paginated(self, suffix: str, params: dict | None = None) -> list:
+        """Follow GitLab's RFC 5988 Link header (rel="next") across pages.
+
+        GitLab (like GitHub) advertises pagination via a Link response header,
+        e.g. `<https://...&page=2>; rel="next", <https://...&page=5>; rel="last"`.
+        We keep requesting the URL under rel="next" until it disappears, capping
+        at MAX_PAGES as a safety net against a misbehaving/looping API.
+        """
+        results: list = []
+        response = self._http.get(self._url(suffix), headers=self._headers, params=params)
+        response.raise_for_status()
+        results.extend(response.json())
+
+        pages_fetched = 1
+        next_url = response.links.get("next", {}).get("url")
+        while next_url:
+            if pages_fetched >= MAX_PAGES:
+                print(
+                    f"AI review: достигнут лимит страниц пагинации ({suffix})",
+                    file=sys.stderr,
+                )
+                break
+            response = self._http.get(next_url, headers=self._headers)
+            response.raise_for_status()
+            results.extend(response.json())
+            pages_fetched += 1
+            next_url = response.links.get("next", {}).get("url")
+        return results
+
     def fetch_diff(self, mr_iid: int) -> MergeRequestDiff:
-        raw_diffs = self._get(f"merge_requests/{mr_iid}/diffs", {"per_page": PAGE_SIZE})
+        raw_diffs = self._get_paginated(f"merge_requests/{mr_iid}/diffs", {"per_page": PAGE_SIZE})
         refs = self._get(f"merge_requests/{mr_iid}")["diff_refs"]
         files = tuple(
             FileDiff(
@@ -81,7 +112,7 @@ class GitLabClient:
         )
 
     def list_discussions(self, mr_iid: int) -> list[Discussion]:
-        raw = self._get(f"merge_requests/{mr_iid}/discussions", {"per_page": PAGE_SIZE})
+        raw = self._get_paginated(f"merge_requests/{mr_iid}/discussions", {"per_page": PAGE_SIZE})
         discussions = []
         for item in raw:
             notes = tuple(Note(id=n["id"], body=n.get("body", "")) for n in item.get("notes", []))
