@@ -1,0 +1,30 @@
+stages:
+  - test
+  - build
+
+variables:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+test:
+  stage: test
+  image: python:3.12-slim
+  interruptible: true
+  script:
+    - pip install -e ".[dev]"
+    - python -m pytest -v
+
+build_image:
+  stage: build
+  image: docker:27
+  services:
+    - docker:27-dind
+  needs:
+    - test
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - docker build -t "$CI_REGISTRY_IMAGE:v1" -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA" .
+    - docker run --rm "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA" review --mr 1 || true
+    - docker push "$CI_REGISTRY_IMAGE:v1"
+    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
