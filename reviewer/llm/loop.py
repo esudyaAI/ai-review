@@ -68,7 +68,13 @@ class ReviewLoop:
 
     def _serve(self, call: ToolCall) -> str:
         try:
-            return self._tools.dispatch(call.name, call.arguments) or "(empty result)"
+            result = self._tools.dispatch(call.name, call.arguments) or "(empty result)"
+            # read_file/grep/list_files can return arbitrary repository content - the
+            # largest prompt-injection surface, since the model chooses what to read.
+            # Wrap it as data, same as the diff and CLAUDE.md, so it's never mistaken
+            # for an instruction. Our own error text below is not repository content,
+            # so it's left unwrapped.
+            return f"<tool_result>\n{result}\n</tool_result>"
         except ToolError as exc:
             return f"Tool error: {exc}"
         except KeyError as exc:

@@ -75,6 +75,39 @@ def test_loop_serves_tool_calls_then_finishes(tools):
     assert "internal/billing.go" in tool_messages[0]["content"]
 
 
+def test_successful_tool_result_is_wrapped_as_data_for_the_model(tools):
+    """read_file/grep/list_files results are the largest prompt-injection surface (the
+    model chooses what to read) - they must be wrapped the same way the diff and
+    CLAUDE.md are, so content inside a file is never mistaken for an instruction."""
+    provider = ScriptedProvider([
+        ProviderResponse(
+            tool_calls=(ToolCall(id="t1", name="list_files", arguments={"path_glob": "internal/*"}),),
+            text=None,
+        ),
+        submit_call([]),
+    ])
+    ReviewLoop(provider, tools).run("system", "user")
+    tool_messages = [m for m in provider.calls[-1] if m.get("role") == "tool"]
+    content = tool_messages[0]["content"]
+    assert content.startswith("<tool_result>\n")
+    assert content.rstrip().endswith("</tool_result>")
+    assert "internal/billing.go" in content
+
+
+def test_tool_error_is_not_wrapped_as_tool_result(tools):
+    # Our own error text is not repository content, so it stays unwrapped.
+    provider = ScriptedProvider([
+        ProviderResponse(
+            tool_calls=(ToolCall(id="t1", name="read_file", arguments={"path": "../secret"}),),
+            text=None,
+        ),
+        submit_call([]),
+    ])
+    ReviewLoop(provider, tools).run("system", "user")
+    tool_messages = [m for m in provider.calls[-1] if m.get("role") == "tool"]
+    assert "<tool_result>" not in tool_messages[0]["content"]
+
+
 def test_loop_reports_tool_errors_back_to_the_model(tools):
     provider = ScriptedProvider([
         ProviderResponse(
