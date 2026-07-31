@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 from typing import Sequence
 
@@ -90,6 +91,12 @@ def run_deterministic(repo: Path, linter: str, changed_files: Sequence[str]) -> 
                               changed_files)
     if linter == "golangci-lint":
         findings.extend(parse_golangci(_run(LINTER_COMMANDS[linter], repo), changed_files))
+    elif linter != "none":
+        print(
+            f"AI review: линтер '{linter}' пока не поддержан детерминированным слоем, "
+            "находки линтера собраны не будут",
+            file=sys.stderr,
+        )
     return findings
 
 
@@ -100,5 +107,9 @@ def _run(command: list[str], repo: Path) -> str:
             timeout=PROCESS_TIMEOUT_SECONDS, check=False,
         )
     except FileNotFoundError:
+        print(
+            f"AI review: инструмент '{command[0]}' не найден в PATH, проверка пропущена",
+            file=sys.stderr,
+        )
         return ""
     return completed.stdout

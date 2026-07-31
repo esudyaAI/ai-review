@@ -1,7 +1,7 @@
 from pathlib import Path
 from unittest.mock import patch
 
-from reviewer.deterministic import parse_gitleaks, parse_golangci, run_deterministic
+from reviewer.deterministic import _run, parse_gitleaks, parse_golangci, run_deterministic
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 
@@ -91,3 +91,31 @@ def test_run_deterministic_calls_both_parsers():
         assert findings[0].source == "gitleaks"
         assert findings[1].source == "linter"
         assert mock_run.call_count == 2
+
+
+def test_run_deterministic_warns_about_unsupported_linter(capsys):
+    """A configured linter run_deterministic doesn't know how to parse (eslint/ruff/
+    shellcheck) must not silently drop findings without any warning."""
+    repo_path = Path("/tmp/fake-repo")
+    with patch("reviewer.deterministic._run", return_value=""):
+        findings = run_deterministic(repo_path, "eslint", ["a.go"])
+    assert findings == []
+    captured = capsys.readouterr()
+    assert "eslint" in captured.err
+    assert "не поддержан" in captured.err
+
+
+def test_run_deterministic_none_linter_does_not_warn(capsys):
+    repo_path = Path("/tmp/fake-repo")
+    with patch("reviewer.deterministic._run", return_value=""):
+        run_deterministic(repo_path, "none", ["a.go"])
+    assert "не поддержан" not in capsys.readouterr().err
+
+
+def test_run_warns_to_stderr_when_the_binary_is_missing(capsys):
+    """A configured linter/gitleaks binary that isn't in PATH must not fail silently."""
+    result = _run(["definitely-not-a-real-binary-xyz"], Path("/tmp/fake-repo"))
+    assert result == ""
+    captured = capsys.readouterr()
+    assert "definitely-not-a-real-binary-xyz" in captured.err
+    assert "не найден в PATH" in captured.err
