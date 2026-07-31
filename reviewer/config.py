@@ -38,6 +38,8 @@ class Config:
             raise ConfigError(f"unknown linter: {self.linter}")
         if self.provider != "openai":
             raise ConfigError(f"unsupported provider: {self.provider}")
+        if not self.model:
+            raise ConfigError("model must not be empty")
         return self
 
     def model_for(self, changed_files: Iterable[str]) -> str:
