@@ -64,15 +64,19 @@ def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int) 
     # etc.) must not abort the whole run and hide every other finding. The exit code still
     # comes from decision.blocking_count/accepted below, so a real blocking finding still
     # blocks the merge even if we failed to post/resolve its GitLab thread.
+    created_count = 0
     for finding in decision.to_create:
         try:
             client.create_discussion(mr_iid, finding, mr)
+            created_count += 1
         except Exception as exc:  # noqa: BLE001
             print(f"AI review: не удалось опубликовать находку {finding.fingerprint}: {exc}", file=sys.stderr)
 
+    resolved_count = 0
     for discussion_id in decision.to_resolve:
         try:
             client.resolve(mr_iid, discussion_id, "Замечание исправлено, тред закрыт автоматически.")
+            resolved_count += 1
         except Exception as exc:  # noqa: BLE001
             print(f"AI review: не удалось закрыть тред {discussion_id}: {exc}", file=sys.stderr)
 
@@ -84,14 +88,21 @@ def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int) 
             if verdict.accepted:
                 client.resolve(mr_iid, discussion_id, f"Аргумент автора принят: {verdict.reason}")
                 accepted.add(discussion_id)
+                resolved_count += 1
             else:
                 client.reply(mr_iid, discussion_id, f"Замечание остаётся: {verdict.reason}")
         except Exception as exc:  # noqa: BLE001
             print(f"AI review: не удалось обработать адъюдикацию треда {discussion_id}: {exc}", file=sys.stderr)
 
+    # blocking_count/exit code reflect the real gate decision regardless of whether
+    # publishing to GitLab succeeded (see the isolated try/except above) - a genuine
+    # blocking finding still blocks the merge even if we failed to post its thread.
+    # created_count/resolved_count in the summary line below are the actual counts of
+    # successful GitLab mutations, not the planned ones, so the printed summary matches
+    # what a reviewer will actually see in the merge request.
     blocking_left = decision.blocking_count - len(accepted)
-    print(f"AI review: новых замечаний {len(decision.to_create)}, "
-          f"закрыто {len(decision.to_resolve) + len(accepted)}, "
+    print(f"AI review: новых замечаний {created_count}, "
+          f"закрыто {resolved_count}, "
           f"осталось открытых {blocking_left}")
     return EXIT_FINDINGS if blocking_left > 0 else EXIT_CLEAN
 

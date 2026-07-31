@@ -192,7 +192,11 @@ def test_create_discussion_failure_does_not_abort_the_run(tmp_path, capsys):
     assert code == EXIT_FINDINGS
     # The 1st and 3rd discussions were posted; only the 2nd (which raised) is missing.
     assert len(client.created) == 2
-    assert "не удалось опубликовать находку" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert "не удалось опубликовать находку" in captured.err
+    # The summary line must report the actually-succeeded count (2), not the planned
+    # count (3) - otherwise it lies about what a reviewer will actually see in the MR.
+    assert "новых замечаний 2" in captured.out
 
 
 def test_high_risk_path_selects_the_stronger_model(tmp_path):
