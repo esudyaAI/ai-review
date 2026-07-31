@@ -149,6 +149,37 @@ def test_resolve_posts_reply_then_marks_resolved(client):
 
 
 @respx.mock
+def test_reply_adds_bot_marker_to_body(client):
+    from reviewer.findings import BOT_NOTE_MARKER
+    route = respx.post(f"{API}/projects/{PROJECT}/merge_requests/7/discussions/abc/notes").mock(
+        return_value=httpx.Response(201, json={"id": 9})
+    )
+    client.reply(7, "abc", "исправлено в abc1234")
+    sent = json.loads(route.calls.last.request.content)
+    assert BOT_NOTE_MARKER in sent["body"]
+    assert "исправлено в abc1234" in sent["body"]
+
+
+@respx.mock
+def test_has_human_reply_excludes_bot_followup_with_marker(client):
+    respx.get(f"{API}/projects/{PROJECT}/merge_requests/7/discussions?per_page=100").mock(
+        return_value=httpx.Response(200, json=[
+            {
+                "id": "d1",
+                "notes": [
+                    {"id": 1, "body": "**[bug] Ошибка**\n\n<!-- ai-review:fp=0123456789abcdef;file=a.go -->",
+                     "resolved": False},
+                    {"id": 2, "body": "Bot follow-up\n\n<!-- ai-review:bot -->", "resolved": False},
+                    {"id": 3, "body": "Human reply: это баг", "resolved": False},
+                ],
+            }
+        ])
+    )
+    discussions = client.list_discussions(7)
+    assert discussions[0].has_human_reply is True
+
+
+@respx.mock
 def test_api_error_raises(client):
     respx.get(f"{API}/projects/{PROJECT}/merge_requests/7/discussions?per_page=100").mock(
         return_value=httpx.Response(500, json={"message": "boom"})

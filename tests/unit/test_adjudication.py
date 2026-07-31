@@ -78,13 +78,14 @@ def test_string_accepted_value_is_treated_as_false():
 
 
 def test_only_human_replies_without_marker_are_sent_to_model():
-    """Verify bot follow-ups (notes with marker) are excluded from the prompt."""
+    """Verify bot follow-ups (notes with bot marker) are excluded from the prompt."""
+    from reviewer.findings import BOT_NOTE_MARKER
     discussion_with_bot_followup = Discussion(
         id="d3",
         notes=(
             Note(id=1, body="**[bug] Issue**\n\n<!-- ai-review:fp=0123456789abcdef;file=a.go -->"),
             Note(id=2, body="First human reply: this is fine"),
-            Note(id=3, body="Bot follow-up\n\n<!-- ai-review:fp=fedcba9876543210;file=a.go -->"),
+            Note(id=3, body=f"Bot follow-up\n\n{BOT_NOTE_MARKER}"),
             Note(id=4, body="Second human reply: actually no"),
         ),
         resolved=False,

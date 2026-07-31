@@ -15,6 +15,7 @@ REQUIRED_FIELDS = (
 )
 
 MARKER_RE = re.compile(r"<!--\s*ai-review:fp=([0-9a-f]{16});file=(.+?)\s*-->")
+BOT_NOTE_MARKER = "<!-- ai-review:bot -->"
 
 
 class FindingsSchemaError(Exception):
@@ -62,6 +63,11 @@ def extract_marker(body: str) -> tuple[str, str] | None:
     if match is None:
         return None
     return match.group(1), match.group(2)
+
+
+def is_bot_note(body: str) -> bool:
+    """True if this note was authored by the reviewer itself (original finding or a follow-up)."""
+    return extract_marker(body) is not None or BOT_NOTE_MARKER in body
 
 
 def parse_findings(payload: dict) -> list[Finding]:

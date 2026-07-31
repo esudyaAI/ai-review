@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import httpx
 
 from reviewer.diff import FileDiff, MergeRequestDiff, parse_new_lines
-from reviewer.findings import Finding, extract_marker, render_comment
+from reviewer.findings import BOT_NOTE_MARKER, Finding, extract_marker, is_bot_note, render_comment
 
 PAGE_SIZE = 100
 MAX_PAGES = 20
@@ -44,8 +44,8 @@ class Discussion:
 
     @property
     def has_human_reply(self) -> bool:
-        # Our own notes always carry the marker; anything else came from a person.
-        return any(extract_marker(note.body) is None for note in self.notes[1:])
+        # Our own notes always carry a marker (either fp;file or bot); anything else came from a person.
+        return any(not is_bot_note(note.body) for note in self.notes[1:])
 
 
 class GitLabClient:
@@ -142,10 +142,11 @@ class GitLabClient:
         return response.json()["id"]
 
     def reply(self, mr_iid: int, discussion_id: str, body: str) -> None:
+        body_with_marker = f"{body}\n\n{BOT_NOTE_MARKER}"
         response = self._http.post(
             self._url(f"merge_requests/{mr_iid}/discussions/{discussion_id}/notes"),
             headers=self._headers,
-            json={"body": body},
+            json={"body": body_with_marker},
         )
         response.raise_for_status()
 
