@@ -60,6 +60,15 @@ def test_already_resolved_thread_does_not_block():
     assert result.blocking_count == 0
 
 
+def test_resolved_thread_with_reproducing_finding_is_not_duplicated():
+    # A deterministic finding (gitleaks/linter) reproduces on every run. If its thread
+    # was resolved (e.g. an accepted counter-argument via .resolve()), the same finding
+    # showing up again must NOT spawn a new duplicate thread.
+    f = finding()
+    result = decide([f], [discussion_for(f, resolved=True)], ["a.go"])
+    assert result.to_create == ()
+
+
 def test_foreign_discussions_are_ignored():
     human_thread = Discussion(id="human", notes=(Note(id=1, body="а давай ещё поле добавим"),), resolved=False)
     result = decide([], [human_thread], ["a.go"])

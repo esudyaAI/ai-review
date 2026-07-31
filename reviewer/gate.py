@@ -35,7 +35,12 @@ def decide(
     found_by_fp = {f.fingerprint: f for f in findings}
     changed = set(changed_files)
 
-    to_create = tuple(f for fp, f in found_by_fp.items() if fp not in open_by_fp)
+    # A finding whose thread was already resolved (e.g. an accepted counter-argument)
+    # must not be re-created just because it's still open-only lookup misses it: a
+    # deterministic finding (gitleaks/linter) reproduces on every run, so if we only
+    # checked open_by_fp we'd spawn a duplicate thread for it forever.
+    known_fps = {d.fingerprint for d in discussions if d.fingerprint is not None}
+    to_create = tuple(f for fp, f in found_by_fp.items() if fp not in known_fps)
     to_resolve: list[str] = []
     kept_open: list[str] = []
     to_adjudicate: list[str] = []
