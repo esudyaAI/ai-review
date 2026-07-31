@@ -64,3 +64,36 @@ def test_discussion_without_human_reply_is_rejected_outright():
     only_bot = Discussion(id="d2", notes=(DISCUSSION.notes[0],), resolved=False)
     with pytest.raises(ValueError):
         adjudicate(OneShotProvider(verdict_response(True, "ок")), only_bot)
+
+
+def test_string_accepted_value_is_treated_as_false():
+    """Verify strict type checking: string "false" doesn't become True via truthiness."""
+    provider = OneShotProvider(ProviderResponse(
+        tool_calls=(ToolCall(id="a1", name="adjudicate",
+                             arguments={"accepted": "false", "reason": "string not bool"}),),
+        text=None,
+    ))
+    result = adjudicate(provider, DISCUSSION)
+    assert result.accepted is False
+
+
+def test_only_human_replies_without_marker_are_sent_to_model():
+    """Verify bot follow-ups (notes with marker) are excluded from the prompt."""
+    discussion_with_bot_followup = Discussion(
+        id="d3",
+        notes=(
+            Note(id=1, body="**[bug] Issue**\n\n<!-- ai-review:fp=0123456789abcdef;file=a.go -->"),
+            Note(id=2, body="First human reply: this is fine"),
+            Note(id=3, body="Bot follow-up\n\n<!-- ai-review:fp=fedcba9876543210;file=a.go -->"),
+            Note(id=4, body="Second human reply: actually no"),
+        ),
+        resolved=False,
+    )
+    provider = OneShotProvider(verdict_response(True, "ок"))
+    adjudicate(provider, discussion_with_bot_followup)
+    conversation = "\n".join(m["content"] for m in provider.messages if m.get("content"))
+    # Only human replies should be in the prompt
+    assert "First human reply" in conversation
+    assert "Second human reply" in conversation
+    # Bot follow-up should NOT be in the prompt
+    assert "Bot follow-up" not in conversation

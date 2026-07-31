@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from reviewer.findings import extract_marker
 from reviewer.gitlab_client import Discussion
 from reviewer.llm.base import LLMProvider
 
@@ -44,7 +45,10 @@ def adjudicate(provider: LLMProvider, discussion: Discussion) -> Verdict:
         raise ValueError("discussion has no human reply to adjudicate")
 
     original = discussion.notes[0].body
-    replies = "\n\n".join(note.body for note in discussion.notes[1:])
+    # Filter replies to include only human-authored notes (those without our marker).
+    # This excludes any bot follow-ups that may appear in the discussion thread.
+    human_replies = [note for note in discussion.notes[1:] if extract_marker(note.body) is None]
+    replies = "\n\n".join(note.body for note in human_replies)
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {
@@ -59,7 +63,14 @@ def adjudicate(provider: LLMProvider, discussion: Discussion) -> Verdict:
     call = next((c for c in response.tool_calls if c.name == "adjudicate"), None)
     if call is None:
         return Verdict(accepted=False, reason="модель не вернула структурированный вердикт")
+
+    # Strict type validation for untrusted field from model.
+    # If accepted is not a bool, treat as False (fail-closed).
+    accepted_value = call.arguments.get("accepted", False)
+    if not isinstance(accepted_value, bool):
+        accepted_value = False
+
     return Verdict(
-        accepted=bool(call.arguments.get("accepted", False)),
+        accepted=accepted_value,
         reason=str(call.arguments.get("reason", "")),
     )
