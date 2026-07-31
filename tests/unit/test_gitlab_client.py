@@ -247,6 +247,29 @@ def test_has_human_reply_excludes_bot_followup_with_marker(client):
 
 
 @respx.mock
+def test_has_human_reply_is_false_once_we_replied_last(client):
+    """Once we reply() to a rejected counter-argument, our bot-marked note becomes the
+    last one in the thread. The dispute must not be re-adjudicated (and the same
+    rejection re-posted) on every subsequent run until the human writes again."""
+    from reviewer.findings import BOT_NOTE_MARKER
+    respx.get(f"{API}/projects/{PROJECT}/merge_requests/7/discussions?per_page=100").mock(
+        return_value=httpx.Response(200, json=[
+            {
+                "id": "d1",
+                "notes": [
+                    {"id": 1, "body": "**[bug] Ошибка**\n\n<!-- ai-review:fp=0123456789abcdef;file=a.go -->",
+                     "resolved": False},
+                    {"id": 2, "body": "Это не баг: ошибка проверяется выше по стеку", "resolved": False},
+                    {"id": 3, "body": f"Замечание остаётся: ...\n\n{BOT_NOTE_MARKER}", "resolved": False},
+                ],
+            }
+        ])
+    )
+    discussions = client.list_discussions(7)
+    assert discussions[0].has_human_reply is False
+
+
+@respx.mock
 def test_api_error_raises(client):
     respx.get(f"{API}/projects/{PROJECT}/merge_requests/7/discussions?per_page=100").mock(
         return_value=httpx.Response(500, json={"message": "boom"})

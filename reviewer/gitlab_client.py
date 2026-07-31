@@ -44,8 +44,13 @@ class Discussion:
 
     @property
     def has_human_reply(self) -> bool:
-        # Our own notes always carry a marker (either fp;file or bot); anything else came from a person.
-        return any(not is_bot_note(note.body) for note in self.notes[1:])
+        # "Has an unanswered human argument" - not "has a human note anywhere in the
+        # thread". Once we reply() to a counter-argument, our own bot-marked note
+        # becomes the last one; the thread should not be re-adjudicated (and the same
+        # rejection re-posted) on every subsequent run until the human writes again.
+        if len(self.notes) <= 1:
+            return False
+        return not is_bot_note(self.notes[-1].body)
 
 
 class GitLabClient:
