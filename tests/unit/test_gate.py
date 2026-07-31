@@ -69,3 +69,19 @@ def test_foreign_discussions_are_ignored():
 
 def test_clean_review_returns_zero():
     assert decide([], [], ["a.go"]).exit_code == 0
+
+
+def test_human_reply_with_disappeared_finding_in_changed_file_goes_to_adjudication_not_resolve():
+    f = finding()
+    result = decide([], [discussion_for(f, human_reply=True)], ["a.go"])
+    assert result.to_adjudicate == (f"d-{f.fingerprint}",)
+    assert result.to_resolve == ()
+    assert result.kept_open == (f"d-{f.fingerprint}",)
+
+
+def test_human_reply_with_disappeared_finding_in_untouched_file_goes_to_adjudication():
+    f = finding(file="b.go")
+    result = decide([], [discussion_for(f, human_reply=True)], ["a.go"])
+    assert result.to_adjudicate == (f"d-{f.fingerprint}",)
+    assert result.to_resolve == ()
+    assert result.kept_open == (f"d-{f.fingerprint}",)

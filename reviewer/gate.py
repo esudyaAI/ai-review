@@ -41,9 +41,13 @@ def decide(
     to_adjudicate: list[str] = []
 
     for fp, discussion in open_by_fp.items():
+        # Human reply takes priority: always adjudicate, regardless of whether finding reproduces.
+        if discussion.has_human_reply:
+            to_adjudicate.append(discussion.id)
+            kept_open.append(discussion.id)
+            continue
+
         if fp in found_by_fp:
-            if discussion.has_human_reply:
-                to_adjudicate.append(discussion.id)
             kept_open.append(discussion.id)
             continue
         if discussion.file in changed:
