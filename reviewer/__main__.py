@@ -56,24 +56,38 @@ def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int) 
     try:
         discussions = client.list_discussions(mr_iid)
         decision = decide(blocking, discussions, mr.changed_files)
+    except Exception as exc:  # noqa: BLE001 - a GitLab failure here is technical, not a verdict
+        print(f"AI review: техническая ошибка при работе с GitLab: {exc}", file=sys.stderr)
+        return EXIT_TECHNICAL
 
-        for finding in decision.to_create:
+    # Each mutating call is isolated: a GitLab failure on one finding (network blip, 500,
+    # etc.) must not abort the whole run and hide every other finding. The exit code still
+    # comes from decision.blocking_count/accepted below, so a real blocking finding still
+    # blocks the merge even if we failed to post/resolve its GitLab thread.
+    for finding in decision.to_create:
+        try:
             client.create_discussion(mr_iid, finding, mr)
-        for discussion_id in decision.to_resolve:
-            client.resolve(mr_iid, discussion_id, "Замечание исправлено, тред закрыт автоматически.")
+        except Exception as exc:  # noqa: BLE001
+            print(f"AI review: не удалось опубликовать находку {finding.fingerprint}: {exc}", file=sys.stderr)
 
-        accepted: set[str] = set()
-        by_id = {d.id: d for d in discussions}
-        for discussion_id in decision.to_adjudicate:
+    for discussion_id in decision.to_resolve:
+        try:
+            client.resolve(mr_iid, discussion_id, "Замечание исправлено, тред закрыт автоматически.")
+        except Exception as exc:  # noqa: BLE001
+            print(f"AI review: не удалось закрыть тред {discussion_id}: {exc}", file=sys.stderr)
+
+    accepted: set[str] = set()
+    by_id = {d.id: d for d in discussions}
+    for discussion_id in decision.to_adjudicate:
+        try:
             verdict = adjudicator(by_id[discussion_id])
             if verdict.accepted:
                 client.resolve(mr_iid, discussion_id, f"Аргумент автора принят: {verdict.reason}")
                 accepted.add(discussion_id)
             else:
                 client.reply(mr_iid, discussion_id, f"Замечание остаётся: {verdict.reason}")
-    except Exception as exc:  # noqa: BLE001 - a mid-loop GitLab failure is technical, not a verdict
-        print(f"AI review: техническая ошибка при работе с GitLab: {exc}", file=sys.stderr)
-        return EXIT_TECHNICAL
+        except Exception as exc:  # noqa: BLE001
+            print(f"AI review: не удалось обработать адъюдикацию треда {discussion_id}: {exc}", file=sys.stderr)
 
     blocking_left = decision.blocking_count - len(accepted)
     print(f"AI review: новых замечаний {len(decision.to_create)}, "

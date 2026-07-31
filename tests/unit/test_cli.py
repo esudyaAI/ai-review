@@ -163,7 +163,10 @@ def test_incomplete_review_is_a_technical_error(tmp_path):
     assert code == EXIT_TECHNICAL
 
 
-def test_gitlab_mutation_failure_is_a_technical_error_not_a_crash(tmp_path):
+def test_create_discussion_failure_does_not_abort_the_run(tmp_path, capsys):
+    """A GitLab failure (network blip, 500, etc.) publishing one finding must not hide
+    every other finding or crash review() - each mutating call is isolated, and the exit
+    code still reflects the real blocking findings regardless of publishing success."""
     findings = [
         Finding(
             category="bug", file="a.go", line_start=2, line_end=2, title=f"Ошибка {i}",
@@ -175,9 +178,12 @@ def test_gitlab_mutation_failure_is_a_technical_error_not_a_crash(tmp_path):
     # mid-loop (e.g. after successfully posting the first discussion).
     client = FakeClient(make_mr(), fail_create_discussion_on_call=2)
     code = review(make_config(), tmp_path, client, lambda model: FakeReviewer(findings), lambda d: None, mr_iid=7)
-    assert code == EXIT_TECHNICAL
-    # The first discussion was posted before the failure; no crash propagated past review().
-    assert len(client.created) == 1
+    # There are still 3 blocking findings, so the run must still block the merge even
+    # though publishing the 2nd one failed.
+    assert code == EXIT_FINDINGS
+    # The 1st and 3rd discussions were posted; only the 2nd (which raised) is missing.
+    assert len(client.created) == 2
+    assert "не удалось опубликовать находку" in capsys.readouterr().err
 
 
 def test_high_risk_path_selects_the_stronger_model(tmp_path):
