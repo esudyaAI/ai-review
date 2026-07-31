@@ -52,6 +52,15 @@ class Discussion:
             return False
         return not is_bot_note(self.notes[-1].body)
 
+    @property
+    def was_ever_disputed(self) -> bool:
+        # True if a human ever replied in this thread, regardless of who replied last.
+        # Used to distinguish "accepted argument, respect it forever" (resolved thread
+        # with a human reply somewhere in it) from "auto-resolved because the finding
+        # stopped reproducing" (resolved thread with no human reply at all) - the latter
+        # must not suppress the same finding if it comes back as a real regression.
+        return any(not is_bot_note(note.body) for note in self.notes[1:])
+
 
 class GitLabClient:
     def __init__(self, api_url: str, token: str, project_id: str, client: httpx.Client) -> None:
@@ -149,8 +158,8 @@ class GitLabClient:
             }
         else:
             body = (
-                f"{body}\n\n_(строка {finding.line_start} вне изменённого диффа, "
-                "замечание не привязано к строке)_"
+                f"{body}\n\n_(файл {finding.file}, строка {finding.line_start} вне "
+                "изменённого диффа, замечание не привязано к строке)_"
             )
             payload = {"body": body}
         response = self._http.post(

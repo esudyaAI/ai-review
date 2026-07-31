@@ -269,6 +269,44 @@ def test_has_human_reply_is_false_once_we_replied_last(client):
     assert discussions[0].has_human_reply is False
 
 
+def test_was_ever_disputed_is_false_with_no_human_reply():
+    only_finding = Discussion(
+        id="d1",
+        notes=(Note(id=1, body="**[bug] x**\n\n<!-- ai-review:fp=0123456789abcdef;file=a.go -->"),),
+        resolved=True,
+    )
+    assert only_finding.was_ever_disputed is False
+
+
+def test_was_ever_disputed_is_true_with_a_human_reply():
+    with_human = Discussion(
+        id="d1",
+        notes=(
+            Note(id=1, body="**[bug] x**\n\n<!-- ai-review:fp=0123456789abcdef;file=a.go -->"),
+            Note(id=2, body="Не баг: обрабатывается выше"),
+        ),
+        resolved=True,
+    )
+    assert with_human.was_ever_disputed is True
+
+
+def test_was_ever_disputed_stays_true_after_our_own_reply_unlike_has_human_reply():
+    from reviewer.findings import BOT_NOTE_MARKER
+    with_bot_followup = Discussion(
+        id="d1",
+        notes=(
+            Note(id=1, body="**[bug] x**\n\n<!-- ai-review:fp=0123456789abcdef;file=a.go -->"),
+            Note(id=2, body="Не баг: обрабатывается выше"),
+            Note(id=3, body=f"Аргумент автора принят: ...\n\n{BOT_NOTE_MARKER}"),
+        ),
+        resolved=True,
+    )
+    # was_ever_disputed looks at the whole thread's history, unlike has_human_reply
+    # (which is now False here since our reply is the last note).
+    assert with_bot_followup.was_ever_disputed is True
+    assert with_bot_followup.has_human_reply is False
+
+
 @respx.mock
 def test_api_error_raises(client):
     respx.get(f"{API}/projects/{PROJECT}/merge_requests/7/discussions?per_page=100").mock(

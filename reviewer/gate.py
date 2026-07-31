@@ -35,11 +35,17 @@ def decide(
     found_by_fp = {f.fingerprint: f for f in findings}
     changed = set(changed_files)
 
-    # A finding whose thread was already resolved (e.g. an accepted counter-argument)
-    # must not be re-created just because it's still open-only lookup misses it: a
-    # deterministic finding (gitleaks/linter) reproduces on every run, so if we only
-    # checked open_by_fp we'd spawn a duplicate thread for it forever.
-    known_fps = {d.fingerprint for d in discussions if d.fingerprint is not None}
+    # A finding whose thread was resolved because a human argument was accepted must not
+    # be re-created just because a deterministic finding (gitleaks/linter) reproduces on
+    # every run - that would spawn a duplicate thread contradicting a decision a human
+    # already made. But a thread that was auto-resolved (no human ever replied - it was
+    # closed only because the finding stopped reproducing) carries no such decision: if
+    # the same finding comes back (revert, bad rebase, regression), it must be treated
+    # as new and block again, not silently suppressed by the old fingerprint.
+    known_fps = {
+        d.fingerprint for d in discussions
+        if d.fingerprint is not None and (not d.resolved or d.was_ever_disputed)
+    }
     to_create = tuple(f for fp, f in found_by_fp.items() if fp not in known_fps)
     to_resolve: list[str] = []
     kept_open: list[str] = []

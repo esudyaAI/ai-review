@@ -60,13 +60,28 @@ def test_already_resolved_thread_does_not_block():
     assert result.blocking_count == 0
 
 
-def test_resolved_thread_with_reproducing_finding_is_not_duplicated():
-    # A deterministic finding (gitleaks/linter) reproduces on every run. If its thread
-    # was resolved (e.g. an accepted counter-argument via .resolve()), the same finding
-    # showing up again must NOT spawn a new duplicate thread.
+def test_auto_resolved_thread_with_reproducing_finding_blocks_again():
+    # A thread that was auto-resolved (no human ever replied - it was closed only
+    # because the finding stopped reproducing on a prior run) carries no human decision
+    # to respect. If the same finding comes back (revert, bad rebase, regression), it
+    # must be treated as new and block again - NOT silently suppressed because a
+    # fingerprint with that value once existed. This is the true-positive regression
+    # case rule 5.5 exists to catch.
     f = finding()
     result = decide([f], [discussion_for(f, resolved=True)], ["a.go"])
+    assert result.to_create == (f,)
+    assert result.blocking_count == 1
+
+
+def test_disputed_and_resolved_thread_with_reproducing_finding_is_not_duplicated():
+    # A deterministic finding (gitleaks/linter) reproduces on every run. If its thread
+    # was resolved BECAUSE a human argument was accepted (there was a human reply in the
+    # thread at some point), the same finding showing up again must NOT spawn a new
+    # duplicate thread - we respect the human's accepted decision going forward.
+    f = finding()
+    result = decide([f], [discussion_for(f, resolved=True, human_reply=True)], ["a.go"])
     assert result.to_create == ()
+    assert result.blocking_count == 0
 
 
 def test_foreign_discussions_are_ignored():
