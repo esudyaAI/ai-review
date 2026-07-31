@@ -15,5 +15,11 @@ dev = ["pytest>=8.0", "respx>=0.21"]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools.packages.find]
+include = ["reviewer*"]
+
+[tool.setuptools.package-data]
+reviewer = ["prompts/*.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
