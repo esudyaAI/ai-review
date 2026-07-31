@@ -5,6 +5,7 @@ import httpx
 import pytest
 import respx
 
+from reviewer.diff import FileDiff, MergeRequestDiff
 from reviewer.findings import Finding
 from reviewer.gitlab_client import Discussion, GitLabClient, Note
 
@@ -133,6 +134,72 @@ def test_create_discussion_positions_the_comment(client):
     assert sent["position"]["new_path"] == "internal/billing/config.go"
     assert sent["position"]["head_sha"] == payload["head_commit_sha"]
     assert "ai-review:fp=" in sent["body"]
+
+
+@respx.mock
+def test_create_discussion_falls_back_when_line_not_in_diff(client):
+    """A cited line that isn't part of the diff must not crash create_discussion (GitLab
+    would reject the position with a 400). We fall back to an unpositioned discussion."""
+    payload = json.loads((FIXTURES / "mr_diffs.json").read_text(encoding="utf-8"))
+    respx.get(f"{API}/projects/{PROJECT}/merge_requests/7/diffs?per_page=100").mock(
+        return_value=httpx.Response(200, json=payload["diffs"])
+    )
+    respx.get(f"{API}/projects/{PROJECT}/merge_requests/7").mock(
+        return_value=httpx.Response(200, json={"diff_refs": {
+            "base_sha": payload["base_commit_sha"],
+            "head_sha": payload["head_commit_sha"],
+            "start_sha": payload["start_commit_sha"],
+        }})
+    )
+    mr = client.fetch_diff(7)
+    route = respx.post(f"{API}/projects/{PROJECT}/merge_requests/7/discussions").mock(
+        return_value=httpx.Response(201, json={"id": "new-discussion"})
+    )
+    finding = Finding(
+        category="bug",
+        file="internal/billing/config.go",
+        line_start=999,  # not in mr.files[0].new_lines == (11, 12)
+        line_end=999,
+        title="Ошибка не проверяется",
+        problem="err игнорируется",
+        evidence="строка 999",
+        suggested_fix="проверить err",
+        confidence="high",
+    )
+    discussion_id = client.create_discussion(7, finding, mr)
+    assert discussion_id == "new-discussion"
+    sent = json.loads(route.calls.last.request.content)
+    assert "position" not in sent
+    assert "вне изменённого диффа" in sent["body"]
+    assert "ai-review:fp=" in sent["body"]
+
+
+@respx.mock
+def test_create_discussion_uses_diff_old_path_for_renamed_files(client):
+    """old_path must come from the file's diff entry, not from finding.file (which is
+    always the new path) - otherwise a rename would send a bogus old_path to GitLab."""
+    mr = MergeRequestDiff(
+        base_sha="b" * 40, head_sha="h" * 40, start_sha="s" * 40,
+        files=(
+            FileDiff(
+                old_path="old/name.go",
+                new_path="new/name.go",
+                diff="@@ -1,2 +1,3 @@\n x\n+y\n",
+                new_lines=(2,),
+            ),
+        ),
+    )
+    route = respx.post(f"{API}/projects/{PROJECT}/merge_requests/7/discussions").mock(
+        return_value=httpx.Response(201, json={"id": "new-discussion"})
+    )
+    finding = Finding(
+        category="bug", file="new/name.go", line_start=2, line_end=2,
+        title="t", problem="p", evidence="e", suggested_fix="s", confidence="high",
+    )
+    client.create_discussion(7, finding, mr)
+    sent = json.loads(route.calls.last.request.content)
+    assert sent["position"]["old_path"] == "old/name.go"
+    assert sent["position"]["new_path"] == "new/name.go"
 
 
 @respx.mock

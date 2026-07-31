@@ -121,18 +121,33 @@ class GitLabClient:
         return discussions
 
     def create_discussion(self, mr_iid: int, finding: Finding, mr: MergeRequestDiff) -> str:
-        payload = {
-            "body": render_comment(finding),
-            "position": {
-                "position_type": "text",
-                "base_sha": mr.base_sha,
-                "head_sha": mr.head_sha,
-                "start_sha": mr.start_sha,
-                "new_path": finding.file,
-                "old_path": finding.file,
-                "new_line": finding.line_start,
-            },
-        }
+        # The model may cite a line it read via read_file/grep that isn't part of the
+        # diff, or a linter finding may sit anywhere in the changed file. GitLab rejects
+        # a position outside the diff with a 400, which would otherwise crash the whole
+        # run and leave the pipeline permanently red. Validate against the real diff and
+        # fall back to an unpositioned discussion instead.
+        file_diff = next((f for f in mr.files if f.new_path == finding.file), None)
+        valid_line = file_diff is not None and finding.line_start in file_diff.new_lines
+        body = render_comment(finding)
+        if valid_line:
+            payload = {
+                "body": body,
+                "position": {
+                    "position_type": "text",
+                    "base_sha": mr.base_sha,
+                    "head_sha": mr.head_sha,
+                    "start_sha": mr.start_sha,
+                    "new_path": finding.file,
+                    "old_path": file_diff.old_path,
+                    "new_line": finding.line_start,
+                },
+            }
+        else:
+            body = (
+                f"{body}\n\n_(строка {finding.line_start} вне изменённого диффа, "
+                "замечание не привязано к строке)_"
+            )
+            payload = {"body": body}
         response = self._http.post(
             self._url(f"merge_requests/{mr_iid}/discussions"),
             headers=self._headers,
