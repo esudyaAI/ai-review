@@ -52,23 +52,28 @@ def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int) 
         return EXIT_TECHNICAL
 
     blocking = keep_blocking(findings)
-    discussions = client.list_discussions(mr_iid)
-    decision = decide(blocking, discussions, mr.changed_files)
 
-    for finding in decision.to_create:
-        client.create_discussion(mr_iid, finding, mr)
-    for discussion_id in decision.to_resolve:
-        client.resolve(mr_iid, discussion_id, "Замечание исправлено, тред закрыт автоматически.")
+    try:
+        discussions = client.list_discussions(mr_iid)
+        decision = decide(blocking, discussions, mr.changed_files)
 
-    accepted: set[str] = set()
-    by_id = {d.id: d for d in discussions}
-    for discussion_id in decision.to_adjudicate:
-        verdict = adjudicator(by_id[discussion_id])
-        if verdict.accepted:
-            client.resolve(mr_iid, discussion_id, f"Аргумент автора принят: {verdict.reason}")
-            accepted.add(discussion_id)
-        else:
-            client.reply(mr_iid, discussion_id, f"Замечание остаётся: {verdict.reason}")
+        for finding in decision.to_create:
+            client.create_discussion(mr_iid, finding, mr)
+        for discussion_id in decision.to_resolve:
+            client.resolve(mr_iid, discussion_id, "Замечание исправлено, тред закрыт автоматически.")
+
+        accepted: set[str] = set()
+        by_id = {d.id: d for d in discussions}
+        for discussion_id in decision.to_adjudicate:
+            verdict = adjudicator(by_id[discussion_id])
+            if verdict.accepted:
+                client.resolve(mr_iid, discussion_id, f"Аргумент автора принят: {verdict.reason}")
+                accepted.add(discussion_id)
+            else:
+                client.reply(mr_iid, discussion_id, f"Замечание остаётся: {verdict.reason}")
+    except Exception as exc:  # noqa: BLE001 - a mid-loop GitLab failure is technical, not a verdict
+        print(f"AI review: техническая ошибка при работе с GitLab: {exc}", file=sys.stderr)
+        return EXIT_TECHNICAL
 
     blocking_left = decision.blocking_count - len(accepted)
     print(f"AI review: новых замечаний {len(decision.to_create)}, "

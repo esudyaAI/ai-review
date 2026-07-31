@@ -11,12 +11,14 @@ from reviewer.llm.loop import ReviewIncomplete
 
 
 class FakeClient:
-    def __init__(self, mr, discussions=()):
+    def __init__(self, mr, discussions=(), fail_create_discussion_on_call=None):
         self.mr = mr
         self.discussions = list(discussions)
         self.created: list[Finding] = []
         self.resolved: list[str] = []
         self.replies: list[tuple[str, str]] = []
+        self._fail_create_discussion_on_call = fail_create_discussion_on_call
+        self._create_discussion_calls = 0
 
     def fetch_diff(self, mr_iid):
         return self.mr
@@ -25,6 +27,9 @@ class FakeClient:
         return self.discussions
 
     def create_discussion(self, mr_iid, finding, mr):
+        self._create_discussion_calls += 1
+        if self._create_discussion_calls == self._fail_create_discussion_on_call:
+            raise RuntimeError("GitLab API 500")
         self.created.append(finding)
         return f"d-{finding.fingerprint}"
 
@@ -156,6 +161,23 @@ def test_incomplete_review_is_a_technical_error(tmp_path):
     reviewer = FakeReviewer(error=ReviewIncomplete("model never called submit_findings"))
     code = review(make_config(), tmp_path, client, lambda model: reviewer, lambda d: None, mr_iid=7)
     assert code == EXIT_TECHNICAL
+
+
+def test_gitlab_mutation_failure_is_a_technical_error_not_a_crash(tmp_path):
+    findings = [
+        Finding(
+            category="bug", file="a.go", line_start=2, line_end=2, title=f"Ошибка {i}",
+            problem="p", evidence="e", suggested_fix="s", confidence="high",
+        )
+        for i in range(3)
+    ]
+    # create_discussion blows up on the 2nd of 3 calls, simulating a GitLab API failure
+    # mid-loop (e.g. after successfully posting the first discussion).
+    client = FakeClient(make_mr(), fail_create_discussion_on_call=2)
+    code = review(make_config(), tmp_path, client, lambda model: FakeReviewer(findings), lambda d: None, mr_iid=7)
+    assert code == EXIT_TECHNICAL
+    # The first discussion was posted before the failure; no crash propagated past review().
+    assert len(client.created) == 1
 
 
 def test_high_risk_path_selects_the_stronger_model(tmp_path):
