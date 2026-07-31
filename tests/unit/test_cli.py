@@ -2,11 +2,20 @@ from pathlib import Path
 
 import pytest
 
-from reviewer.__main__ import EXIT_CLEAN, EXIT_FINDINGS, EXIT_TECHNICAL, EXIT_TOO_LARGE, review
+from reviewer.__main__ import (
+    EXIT_CLEAN,
+    EXIT_FINDINGS,
+    EXIT_TECHNICAL,
+    EXIT_TOO_LARGE,
+    _adjudicator_for,
+    main,
+    review,
+)
 from reviewer.config import Config, Limits
 from reviewer.diff import FileDiff, MergeRequestDiff
 from reviewer.findings import Finding, render_comment
 from reviewer.gitlab_client import Discussion, Note
+from reviewer.llm.base import ProviderResponse, ToolCall
 from reviewer.llm.loop import ReviewIncomplete
 
 
@@ -202,3 +211,65 @@ def test_high_risk_path_selects_the_stronger_model(tmp_path):
                          high_risk_paths=("internal/billing/**",))
     review(config, tmp_path, FakeClient(mr), make_reviewer, lambda d: None, mr_iid=7)
     assert seen == ["strong"]
+
+
+class FakeAdjudicationProvider:
+    def __init__(self, response):
+        self.response = response
+
+    def complete(self, messages, tools):
+        return self.response
+
+
+def test_high_risk_discussion_selects_the_stronger_model_for_adjudication():
+    """A dispute over a finding on a high-risk path (e.g. billing) must be adjudicated
+    by the stronger model, not always the base config.model - otherwise a weaker model
+    resolves a dispute over a finding the stronger model produced."""
+    seen: list[str] = []
+
+    def make_provider(model):
+        seen.append(model)
+        return FakeAdjudicationProvider(ProviderResponse(
+            tool_calls=(ToolCall(id="a1", name="adjudicate",
+                                 arguments={"accepted": True, "reason": "ок"}),),
+            text=None,
+        ))
+
+    config = make_config(model="weak", model_high_risk="strong",
+                         high_risk_paths=("internal/billing/**",))
+    discussion = Discussion(
+        id="d1",
+        notes=(
+            Note(id=1, body="**[bug] x**\n\n<!-- ai-review:fp=0123456789abcdef;"
+                             "file=internal/billing/x.go -->"),
+            Note(id=2, body="человеческий ответ автора"),
+        ),
+        resolved=False,
+    )
+
+    adjudicator = _adjudicator_for(config, make_provider)
+    adjudicator(discussion)
+    assert seen == ["strong"]
+
+
+def test_main_returns_technical_error_when_env_var_is_missing(tmp_path, monkeypatch):
+    """A missing required env var (OPENAI_API_KEY etc.) must be classified as a technical
+    error (EXIT_TECHNICAL), not an uncaught exception that crashes with Python's exit
+    code 1 - which, per contract, means 'there are blocking findings'."""
+    (tmp_path / ".ai-review.yml").write_text("linter: none\nmodel: m\n", encoding="utf-8")
+    monkeypatch.setenv("CI_PROJECT_DIR", str(tmp_path))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    code = main(["review", "--mr", "7"])
+    assert code == EXIT_TECHNICAL
+
+
+def test_main_returns_technical_error_on_broken_config(tmp_path, monkeypatch):
+    """A broken .ai-review.yml (e.g. bad YAML, or one caught by Config.validate()) must
+    not crash main() with an uncaught ConfigError."""
+    (tmp_path / ".ai-review.yml").write_text("linter: not-a-real-linter\n", encoding="utf-8")
+    monkeypatch.setenv("CI_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    code = main(["review", "--mr", "7"])
+    assert code == EXIT_TECHNICAL

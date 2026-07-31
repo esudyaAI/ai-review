@@ -96,34 +96,50 @@ def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int) 
     return EXIT_FINDINGS if blocking_left > 0 else EXIT_CLEAN
 
 
+def _adjudicator_for(config, make_provider):
+    """Build the adjudication callback, routing to config.model_for(discussion.file) so a
+    dispute over a high-risk finding (e.g. billing/migrations) is resolved by the same
+    stronger model that would have produced it, not always the base model."""
+
+    def adjudicate_discussion(discussion):
+        model = config.model_for([discussion.file] if discussion.file else [])
+        return adjudicate(make_provider(model), discussion)
+
+    return adjudicate_discussion
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="reviewer")
     parser.add_argument("command", choices=["review"])
     parser.add_argument("--mr", type=int, required=True)
     args = parser.parse_args(argv)
 
-    repo = Path(os.environ.get("CI_PROJECT_DIR", "."))
-    config = load_config(repo / ".ai-review.yml")
-    api_key = os.environ["OPENAI_API_KEY"]
+    try:
+        repo = Path(os.environ.get("CI_PROJECT_DIR", "."))
+        config = load_config(repo / ".ai-review.yml")
+        api_key = os.environ["OPENAI_API_KEY"]
 
-    def make_provider(model: str) -> OpenAIProvider:
-        return OpenAIProvider(api_key=api_key, base_url=config.base_url, model=model)
+        def make_provider(model: str) -> OpenAIProvider:
+            return OpenAIProvider(api_key=api_key, base_url=config.base_url, model=model)
 
-    client = GitLabClient(
-        api_url=os.environ["CI_API_V4_URL"],
-        token=os.environ["AI_REVIEW_GITLAB_TOKEN"],
-        project_id=os.environ["CI_PROJECT_ID"],
-        client=httpx.Client(timeout=60.0),
-    )
-    tools = RepoTools(root=repo)
-    return review(
-        config,
-        repo,
-        client,
-        lambda model: ReviewLoop(make_provider(model), tools),
-        lambda discussion: adjudicate(make_provider(config.model), discussion),
-        args.mr,
-    )
+        client = GitLabClient(
+            api_url=os.environ["CI_API_V4_URL"],
+            token=os.environ["AI_REVIEW_GITLAB_TOKEN"],
+            project_id=os.environ["CI_PROJECT_ID"],
+            client=httpx.Client(timeout=60.0),
+        )
+        tools = RepoTools(root=repo)
+        return review(
+            config,
+            repo,
+            client,
+            lambda model: ReviewLoop(make_provider(model), tools),
+            _adjudicator_for(config, make_provider),
+            args.mr,
+        )
+    except Exception as exc:  # noqa: BLE001 - startup/config/env failures are technical, not a verdict
+        print(f"AI review: техническая ошибка при старте: {exc}", file=sys.stderr)
+        return EXIT_TECHNICAL
 
 
 if __name__ == "__main__":
