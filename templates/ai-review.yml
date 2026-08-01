@@ -10,7 +10,14 @@ spec:
 
 ai-review:
   stage: test
-  image: registry.gitlab.com/jobbytime.com-group/jobbytime-ai-review:$[[ inputs.image_tag ]]
+  image:
+    name: registry.gitlab.com/jobbytime.com-group/jobbytime-ai-review:$[[ inputs.image_tag ]]
+    # The image's own ENTRYPOINT (python -m reviewer) is not shell-compatible: GitLab
+    # Runner appends `sh -c "<script>"` to the image's entrypoint when running `script:`,
+    # which the reviewer's argparse then rejects ("invalid choice: 'sh'"). An empty
+    # entrypoint makes Runner fall back to plain `sh -c`, so `script:` below runs as
+    # written instead of being swallowed by the image's own entrypoint.
+    entrypoint: [""]
   interruptible: true
   allow_failure: $[[ inputs.allow_failure ]]
   rules:
