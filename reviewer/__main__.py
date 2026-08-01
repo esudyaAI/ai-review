@@ -40,7 +40,7 @@ def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int) 
 
     try:
         claude_md = (repo / "CLAUDE.md").read_text(encoding="utf-8") if (repo / "CLAUDE.md").exists() else ""
-        findings = list(run_deterministic(repo, config.linter, mr.changed_files))
+        findings = list(run_deterministic(repo, mr.changed_files))
         # High-risk paths in the diff pull the whole review to the stronger model.
         reviewer = make_reviewer(config.model_for(mr.changed_files))
         findings.extend(reviewer.run(build_system_prompt(claude_md), build_user_prompt(mr)))

@@ -36,7 +36,7 @@ def decide(
     changed = set(changed_files)
 
     # A finding whose thread was resolved because a human argument was accepted must not
-    # be re-created just because a deterministic finding (gitleaks/linter) reproduces on
+    # be re-created just because a deterministic finding (gitleaks) reproduces on
     # every run - that would spawn a duplicate thread contradicting a decision a human
     # already made. But a thread that was auto-resolved (no human ever replied - it was
     # closed only because the finding stopped reproducing) carries no such decision: if

@@ -10,12 +10,6 @@ from typing import Sequence
 
 from reviewer.findings import Finding
 
-LINTER_COMMANDS = {
-    "golangci-lint": ["golangci-lint", "run", "--out-format", "json"],
-    "eslint": ["npx", "--no-install", "eslint", "--format", "json", "."],
-    "ruff": ["ruff", "check", "--output-format", "json", "."],
-    "shellcheck": ["shellcheck", "--format", "json", "-S", "warning", "-x", "."],
-}
 PROCESS_TIMEOUT_SECONDS = 300
 
 
@@ -53,51 +47,12 @@ def parse_gitleaks(report: str, changed_files: Sequence[str]) -> list[Finding]:
     return findings
 
 
-def parse_golangci(report: str, changed_files: Sequence[str]) -> list[Finding]:
-    changed = set(changed_files)
-    try:
-        payload = json.loads(report or "{}") or {}
-    except json.JSONDecodeError:
-        return []
-    findings: list[Finding] = []
-    for issue in payload.get("Issues") or []:
-        position = issue.get("Pos") or {}
-        path = position.get("Filename", "")
-        if path not in changed:
-            continue
-        line = int(position.get("Line", 1))
-        linter = issue.get("FromLinter", "linter")
-        text = issue.get("Text", "")
-        findings.append(
-            Finding(
-                category="bug",
-                file=path,
-                line_start=line,
-                line_end=line,
-                title=f"Линтер: {text}",
-                problem=text,
-                evidence=f"{linter}, строка {line}",
-                suggested_fix="Исправить замечание линтера",
-                confidence="high",
-                source="linter",
-            )
-        )
-    return findings
-
-
-def run_deterministic(repo: Path, linter: str, changed_files: Sequence[str]) -> list[Finding]:
-    findings = parse_gitleaks(_run(["gitleaks", "detect", "--no-git", "--report-format", "json",
-                                    "--report-path", "/dev/stdout", "--exit-code", "0"], repo),
-                              changed_files)
-    if linter == "golangci-lint":
-        findings.extend(parse_golangci(_run(LINTER_COMMANDS[linter], repo), changed_files))
-    elif linter != "none":
-        print(
-            f"AI review: линтер '{linter}' пока не поддержан детерминированным слоем, "
-            "находки линтера собраны не будут",
-            file=sys.stderr,
-        )
-    return findings
+def run_deterministic(repo: Path, changed_files: Sequence[str]) -> list[Finding]:
+    return parse_gitleaks(
+        _run(["gitleaks", "detect", "--no-git", "--report-format", "json",
+              "--report-path", "/dev/stdout", "--exit-code", "0"], repo),
+        changed_files,
+    )
 
 
 def _run(command: list[str], repo: Path) -> str:

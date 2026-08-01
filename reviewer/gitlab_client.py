@@ -136,10 +136,9 @@ class GitLabClient:
 
     def create_discussion(self, mr_iid: int, finding: Finding, mr: MergeRequestDiff) -> str:
         # The model may cite a line it read via read_file/grep that isn't part of the
-        # diff, or a linter finding may sit anywhere in the changed file. GitLab rejects
-        # a position outside the diff with a 400, which would otherwise crash the whole
-        # run and leave the pipeline permanently red. Validate against the real diff and
-        # fall back to an unpositioned discussion instead.
+        # diff. GitLab rejects a position outside the diff with a 400, which would
+        # otherwise crash the whole run and leave the pipeline permanently red.
+        # Validate against the real diff and fall back to an unpositioned discussion.
         file_diff = next((f for f in mr.files if f.new_path == finding.file), None)
         valid_line = file_diff is not None and finding.line_start in file_diff.new_lines
         body = render_comment(finding)

@@ -74,7 +74,7 @@ def test_auto_resolved_thread_with_reproducing_finding_blocks_again():
 
 
 def test_disputed_and_resolved_thread_with_reproducing_finding_is_not_duplicated():
-    # A deterministic finding (gitleaks/linter) reproduces on every run. If its thread
+    # A deterministic finding (gitleaks) reproduces on every run. If its thread
     # was resolved BECAUSE a human argument was accepted (there was a human reply in the
     # thread at some point), the same finding showing up again must NOT spawn a new
     # duplicate thread - we respect the human's accepted decision going forward.

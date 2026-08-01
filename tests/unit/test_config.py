@@ -9,7 +9,6 @@ FIXTURE = Path(__file__).parent.parent / "fixtures" / "ai-review.yml"
 
 def test_loads_values_from_file():
     config = load_config(FIXTURE)
-    assert config.linter == "golangci-lint"
     assert config.test_command == "make test-unit"
     assert config.model == "review-model"
     assert config.model_high_risk == "review-model-strong"
@@ -27,7 +26,6 @@ def test_missing_file_without_model_is_rejected():
 def test_missing_model_is_rejected_even_with_other_defaults_valid():
     with pytest.raises(ConfigError):
         Config(
-            linter="none",
             test_command="",
             provider="openai",
             base_url="https://api.openai.com/v1",
@@ -45,12 +43,11 @@ def test_high_risk_path_selects_stronger_model():
     assert config.model_for(["migrations/new/001_init.sql"]) == "review-model-strong"
 
 
-def test_unknown_linter_is_rejected():
+def test_unsupported_provider_is_rejected():
     with pytest.raises(ConfigError):
         Config(
-            linter="clang-tidy",
             test_command="",
-            provider="openai",
+            provider="anthropic",
             base_url="https://api.openai.com/v1",
             model="m",
             model_high_risk="m",

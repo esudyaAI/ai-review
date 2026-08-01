@@ -9,8 +9,6 @@ from typing import Iterable
 
 import yaml
 
-KNOWN_LINTERS = frozenset({"golangci-lint", "eslint", "ruff", "shellcheck", "none"})
-
 
 class ConfigError(Exception):
     """Raised when .ai-review.yml contains unusable values."""
@@ -24,7 +22,6 @@ class Limits:
 
 @dataclass(frozen=True)
 class Config:
-    linter: str = "none"
     test_command: str = ""
     provider: str = "openai"
     base_url: str = "https://api.openai.com/v1"
@@ -34,8 +31,6 @@ class Config:
     limits: Limits = field(default_factory=Limits)
 
     def validate(self) -> "Config":
-        if self.linter not in KNOWN_LINTERS:
-            raise ConfigError(f"unknown linter: {self.linter}")
         if self.provider != "openai":
             raise ConfigError(f"unsupported provider: {self.provider}")
         if not self.model:
@@ -58,7 +53,6 @@ def load_config(path: Path) -> Config:
     limits_raw = raw.get("limits") or {}
     defaults = Limits()
     config = Config(
-        linter=raw.get("linter", "none"),
         test_command=raw.get("test_command", ""),
         provider=raw.get("provider", "openai"),
         base_url=raw.get("base_url", "https://api.openai.com/v1"),

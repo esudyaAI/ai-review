@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
-# gitleaks is the deterministic secret scanner; the language linter comes from the
-# consuming repository's own image layer or is skipped when set to "none".
+# gitleaks is the reviewer's only deterministic check. Language linters run as a
+# separate job in each consuming repository's own pipeline, not inside this image.
 ARG GITLEAKS_VERSION=8.18.4
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl ca-certificates git \

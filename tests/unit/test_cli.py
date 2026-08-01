@@ -69,7 +69,7 @@ def make_mr():
 
 def make_config(**overrides):
     data = dict(
-        linter="none", test_command="", provider="openai",
+        test_command="", provider="openai",
         base_url="https://api.openai.com/v1", model="m", model_high_risk="m",
         high_risk_paths=(), limits=Limits(),
     )
@@ -260,7 +260,7 @@ def test_main_returns_technical_error_when_env_var_is_missing(tmp_path, monkeypa
     """A missing required env var (OPENAI_API_KEY etc.) must be classified as a technical
     error (EXIT_TECHNICAL), not an uncaught exception that crashes with Python's exit
     code 1 - which, per contract, means 'there are blocking findings'."""
-    (tmp_path / ".ai-review.yml").write_text("linter: none\nmodel: m\n", encoding="utf-8")
+    (tmp_path / ".ai-review.yml").write_text("model: m\n", encoding="utf-8")
     monkeypatch.setenv("CI_PROJECT_DIR", str(tmp_path))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
@@ -271,7 +271,7 @@ def test_main_returns_technical_error_when_env_var_is_missing(tmp_path, monkeypa
 def test_main_returns_technical_error_on_broken_config(tmp_path, monkeypatch):
     """A broken .ai-review.yml (e.g. bad YAML, or one caught by Config.validate()) must
     not crash main() with an uncaught ConfigError."""
-    (tmp_path / ".ai-review.yml").write_text("linter: not-a-real-linter\n", encoding="utf-8")
+    (tmp_path / ".ai-review.yml").write_text("test_command: x\n", encoding="utf-8")
     monkeypatch.setenv("CI_PROJECT_DIR", str(tmp_path))
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
 
