@@ -1,3 +1,8 @@
+include:
+  - local: templates/ai-review.yml
+    inputs:
+      allow_failure: true
+
 stages:
   - test
   - build
