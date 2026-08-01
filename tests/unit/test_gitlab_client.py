@@ -7,6 +7,7 @@ import respx
 
 from reviewer.diff import FileDiff, MergeRequestDiff
 from reviewer.findings import Finding
+from reviewer.gate import decide
 from reviewer.gitlab_client import Discussion, GitLabClient, Note
 
 API = "https://gitlab.example.com/api/v4"
@@ -172,6 +173,51 @@ def test_create_discussion_falls_back_when_line_not_in_diff(client):
     assert "position" not in sent
     assert "вне изменённого диффа" in sent["body"]
     assert "ai-review:fp=" in sent["body"]
+
+
+@respx.mock
+def test_create_discussion_fallback_round_trips_through_gate(client):
+    """The fallback (unpositioned) body must stay dedupable: once GitLab hands the note
+    back to us on the next run, Discussion.fingerprint/.file must parse correctly from
+    it, and gate.decide() must not create a duplicate thread for the same finding."""
+    payload = json.loads((FIXTURES / "mr_diffs.json").read_text(encoding="utf-8"))
+    respx.get(f"{API}/projects/{PROJECT}/merge_requests/7/diffs?per_page=100").mock(
+        return_value=httpx.Response(200, json=payload["diffs"])
+    )
+    respx.get(f"{API}/projects/{PROJECT}/merge_requests/7").mock(
+        return_value=httpx.Response(200, json={"diff_refs": {
+            "base_sha": payload["base_commit_sha"],
+            "head_sha": payload["head_commit_sha"],
+            "start_sha": payload["start_commit_sha"],
+        }})
+    )
+    mr = client.fetch_diff(7)
+    route = respx.post(f"{API}/projects/{PROJECT}/merge_requests/7/discussions").mock(
+        return_value=httpx.Response(201, json={"id": "new-discussion"})
+    )
+    finding = Finding(
+        category="bug",
+        file="internal/billing/config.go",
+        line_start=999,  # not in mr.files[0].new_lines == (11, 12)
+        line_end=999,
+        title="Ошибка не проверяется",
+        problem="err игнорируется",
+        evidence="строка 999",
+        suggested_fix="проверить err",
+        confidence="high",
+    )
+    client.create_discussion(7, finding, mr)
+    sent_body = json.loads(route.calls.last.request.content)["body"]
+
+    # Simulate GitLab handing this exact note back to us on the next run's
+    # list_discussions() call.
+    discussion = Discussion(id="new-discussion", notes=(Note(id=1, body=sent_body),), resolved=False)
+    assert discussion.fingerprint == finding.fingerprint
+    assert discussion.file == finding.file
+
+    decision = decide([finding], [discussion], mr.changed_files)
+    assert decision.to_create == ()
+    assert decision.blocking_count == 1
 
 
 @respx.mock
