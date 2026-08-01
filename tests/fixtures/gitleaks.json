@@ -1,0 +1,18 @@
+[
+  {
+    "RuleID": "stripe-access-token",
+    "Description": "Stripe Access Token",
+    "File": "internal/billing/config.go",
+    "StartLine": 12,
+    "EndLine": 12,
+    "Match": "sk_live_REDACTED_BY_FIXTURE"
+  },
+  {
+    "RuleID": "generic-api-key",
+    "Description": "Generic API Key",
+    "File": "docs/old-notes.md",
+    "StartLine": 3,
+    "EndLine": 3,
+    "Match": "key = REDACTED_BY_FIXTURE"
+  }
+]

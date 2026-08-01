@@ -1,0 +1,22 @@
+# Include this template to add an AI review gate to a merge request pipeline.
+spec:
+  inputs:
+    image_tag:
+      default: "v1"
+    allow_failure:
+      default: true
+      type: boolean
+---
+
+ai-review:
+  stage: test
+  image: registry.gitlab.com/jobbytime.com-group/jobbytime-ai-review:$[[ inputs.image_tag ]]
+  interruptible: true
+  allow_failure: $[[ inputs.allow_failure ]]
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - when: never
+  variables:
+    GIT_DEPTH: "0"
+  script:
+    - python -m reviewer review --mr "$CI_MERGE_REQUEST_IID"

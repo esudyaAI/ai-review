@@ -1,0 +1,11 @@
+test_command: make test-unit
+provider: openai
+base_url: https://api.openai.com/v1
+model: review-model
+model_high_risk: review-model-strong
+high_risk_paths:
+  - internal/billing/**
+  - migrations/**
+limits:
+  max_files: 40
+  max_changed_lines: 2000
