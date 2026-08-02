@@ -7,12 +7,22 @@ import pytest
 from openai import BadRequestError
 
 from reviewer.llm.openai_provider import OpenAIProvider
+from reviewer.llm.usage import UsageTracker
 
 
-def make_response(tool_calls=(), content=None):
+def make_usage(prompt_tokens, completion_tokens, cached_tokens=None):
+    details = SimpleNamespace(cached_tokens=cached_tokens) if cached_tokens is not None else None
+    return SimpleNamespace(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        prompt_tokens_details=details,
+    )
+
+
+def make_response(tool_calls=(), content=None, usage=None):
     message = SimpleNamespace(tool_calls=tool_calls or None, content=content)
     choice = SimpleNamespace(message=message)
-    return SimpleNamespace(choices=[choice])
+    return SimpleNamespace(choices=[choice], usage=usage)
 
 
 def make_tool_call(call_id, name, arguments):
@@ -61,3 +71,57 @@ def test_falls_back_to_auto_when_required_is_rejected(provider, capsys):
     assert mock_create.call_args_list[1].kwargs["tool_choice"] == "auto"
     assert result.tool_calls[0].name == "submit_findings"
     assert "tool_choice='required'" in capsys.readouterr().err
+
+
+def test_complete_records_usage_into_the_shared_tracker():
+    tracker = UsageTracker()
+    provider = OpenAIProvider(
+        api_key="test-key", base_url="https://api.openai.com/v1", model="test-model",
+        usage_tracker=tracker,
+    )
+    response = make_response(
+        tool_calls=[make_tool_call("c1", "list_files", {})],
+        usage=make_usage(prompt_tokens=1000, completion_tokens=200, cached_tokens=300),
+    )
+    with patch.object(provider._client.chat.completions, "create", return_value=response):
+        provider.complete([{"role": "user", "content": "go"}], [{"type": "function"}])
+
+    usage = tracker.by_model()["test-model"]
+    assert usage.prompt_tokens == 1000
+    assert usage.completion_tokens == 200
+    assert usage.cached_tokens == 300
+
+
+def test_complete_records_usage_across_multiple_calls_on_the_same_provider():
+    tracker = UsageTracker()
+    provider = OpenAIProvider(
+        api_key="test-key", base_url="https://api.openai.com/v1", model="test-model",
+        usage_tracker=tracker,
+    )
+    responses = [
+        make_response(
+            tool_calls=[make_tool_call("c1", "list_files", {})],
+            usage=make_usage(prompt_tokens=500, completion_tokens=50),
+        ),
+        make_response(
+            tool_calls=[make_tool_call("c2", "list_files", {})],
+            usage=make_usage(prompt_tokens=600, completion_tokens=60),
+        ),
+    ]
+    with patch.object(provider._client.chat.completions, "create", side_effect=responses):
+        provider.complete([{"role": "user", "content": "go"}], [{"type": "function"}])
+        provider.complete([{"role": "user", "content": "go"}], [{"type": "function"}])
+
+    usage = tracker.by_model()["test-model"]
+    assert usage.prompt_tokens == 1100
+    assert usage.completion_tokens == 110
+
+
+def test_complete_without_a_tracker_does_not_error_on_usage(provider):
+    response = make_response(
+        tool_calls=[make_tool_call("c1", "list_files", {})],
+        usage=make_usage(prompt_tokens=1000, completion_tokens=200),
+    )
+    with patch.object(provider._client.chat.completions, "create", return_value=response):
+        result = provider.complete([{"role": "user", "content": "go"}], [{"type": "function"}])
+    assert result.tool_calls[0].name == "list_files"

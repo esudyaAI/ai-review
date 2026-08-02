@@ -8,12 +8,21 @@ import sys
 from openai import BadRequestError, OpenAI
 
 from reviewer.llm.base import ProviderResponse, ToolCall
+from reviewer.llm.usage import UsageTracker
 
 
 class OpenAIProvider:
-    def __init__(self, api_key: str, base_url: str, model: str, timeout: float = 120.0) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str,
+        model: str,
+        timeout: float = 120.0,
+        usage_tracker: UsageTracker | None = None,
+    ) -> None:
         self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout, max_retries=3)
         self._model = model
+        self._usage_tracker = usage_tracker
 
     def complete(self, messages: list[dict], tools: list[dict]) -> ProviderResponse:
         # A plain-text answer has no meaning in our protocol: the model must always
@@ -40,6 +49,16 @@ class OpenAIProvider:
                 tools=tools,
                 tool_choice="auto",
             )
+        if self._usage_tracker is not None and response.usage is not None:
+            details = response.usage.prompt_tokens_details
+            cached = details.cached_tokens if details is not None and details.cached_tokens else 0
+            self._usage_tracker.record(
+                self._model,
+                response.usage.prompt_tokens,
+                response.usage.completion_tokens,
+                cached,
+            )
+
         message = response.choices[0].message
         calls = []
         for call in message.tool_calls or []:
