@@ -55,7 +55,10 @@ def tools(tmp_path):
 
 
 def test_loop_returns_findings_from_submit(tools):
-    provider = ScriptedProvider([submit_call([VALID_FINDING])])
+    provider = ScriptedProvider([
+        list_files_call("i1"), list_files_call("i2"), list_files_call("i3"),
+        submit_call([VALID_FINDING]),
+    ])
     findings = ReviewLoop(provider, tools).run("system", "user")
     assert len(findings) == 1
     assert findings[0].title == "Charge не покрыт тестом"
@@ -67,6 +70,8 @@ def test_loop_serves_tool_calls_then_finishes(tools):
             tool_calls=(ToolCall(id="t1", name="list_files", arguments={"path_glob": "internal/*"}),),
             text=None,
         ),
+        list_files_call("t2"),
+        list_files_call("t3"),
         submit_call([]),
     ])
     findings = ReviewLoop(provider, tools).run("system", "user")
@@ -84,6 +89,8 @@ def test_successful_tool_result_is_wrapped_as_data_for_the_model(tools):
             tool_calls=(ToolCall(id="t1", name="list_files", arguments={"path_glob": "internal/*"}),),
             text=None,
         ),
+        list_files_call("t2"),
+        list_files_call("t3"),
         submit_call([]),
     ])
     ReviewLoop(provider, tools).run("system", "user")
@@ -101,6 +108,8 @@ def test_tool_error_is_not_wrapped_as_tool_result(tools):
             tool_calls=(ToolCall(id="t1", name="read_file", arguments={"path": "../secret"}),),
             text=None,
         ),
+        list_files_call("t2"),
+        list_files_call("t3"),
         submit_call([]),
     ])
     ReviewLoop(provider, tools).run("system", "user")
@@ -114,6 +123,8 @@ def test_loop_reports_tool_errors_back_to_the_model(tools):
             tool_calls=(ToolCall(id="t1", name="read_file", arguments={"path": "../secret"}),),
             text=None,
         ),
+        list_files_call("t2"),
+        list_files_call("t3"),
         submit_call([]),
     ])
     ReviewLoop(provider, tools).run("system", "user")
@@ -123,7 +134,10 @@ def test_loop_reports_tool_errors_back_to_the_model(tools):
 
 def test_loop_retries_once_on_broken_schema(tools):
     broken = {"category": "bug"}
-    provider = ScriptedProvider([submit_call([broken]), submit_call([VALID_FINDING])])
+    provider = ScriptedProvider([
+        list_files_call("i1"), list_files_call("i2"), list_files_call("i3"),
+        submit_call([broken]), submit_call([VALID_FINDING]),
+    ])
     findings = ReviewLoop(provider, tools).run("system", "user")
     assert len(findings) == 1
     assert not provider.responses
@@ -131,7 +145,10 @@ def test_loop_retries_once_on_broken_schema(tools):
 
 def test_loop_fails_when_schema_stays_broken(tools):
     broken = {"category": "bug"}
-    provider = ScriptedProvider([submit_call([broken]), submit_call([broken]), submit_call([broken])])
+    provider = ScriptedProvider([
+        list_files_call("i1"), list_files_call("i2"), list_files_call("i3"),
+        submit_call([broken]), submit_call([broken]), submit_call([broken]),
+    ])
     with pytest.raises(ReviewIncomplete):
         ReviewLoop(provider, tools).run("system", "user")
 
@@ -157,6 +174,9 @@ def test_loop_fails_when_model_answers_with_plain_text(tools):
 def test_loop_recovers_after_one_plain_text_response(tools):
     provider = ScriptedProvider([
         ProviderResponse(tool_calls=(), text="всё хорошо, замечаний нет"),
+        list_files_call("t1"),
+        list_files_call("t2"),
+        list_files_call("t3"),
         submit_call([]),
     ])
     findings = ReviewLoop(provider, tools).run("system", "user")
@@ -176,13 +196,69 @@ def test_loop_fails_after_three_consecutive_text_responses(tools):
     assert len(provider.calls) == 3
 
 
+def list_files_call(call_id):
+    return ProviderResponse(
+        tool_calls=(ToolCall(id=call_id, name="list_files", arguments={}),), text=None
+    )
+
+
+def test_submit_before_enough_investigation_is_reminded_not_accepted(tools):
+    provider = ScriptedProvider([
+        list_files_call("t1"),
+        list_files_call("t2"),
+        submit_call([VALID_FINDING], call_id="c1"),  # only 2 investigation calls so far
+        list_files_call("t3"),
+        submit_call([VALID_FINDING], call_id="c2"),  # now 3 - accepted
+    ])
+    findings = ReviewLoop(provider, tools).run("system", "user")
+    assert len(findings) == 1
+    reminder_messages = [m for m in provider.calls[-1] if m.get("role") == "tool"]
+    assert any("не проверил код инструментами" in m["content"] for m in reminder_messages)
+
+
+def test_submit_is_eventually_accepted_after_investigation_reminders_exhausted(tools):
+    # Model never investigates at all - after MAX_INVESTIGATION_REMINDERS (2) the loop
+    # stops nudging and accepts the verdict rather than blocking forever.
+    provider = ScriptedProvider([
+        submit_call([VALID_FINDING], call_id="c1"),
+        submit_call([VALID_FINDING], call_id="c2"),
+        submit_call([VALID_FINDING], call_id="c3"),
+    ])
+    findings = ReviewLoop(provider, tools).run("system", "user")
+    assert len(findings) == 1
+    assert not provider.responses
+
+
+def test_investigation_reminder_serves_sibling_tool_calls_in_the_same_batch(tools):
+    provider = ScriptedProvider([
+        ProviderResponse(
+            tool_calls=(
+                ToolCall(id="s1", name="submit_findings",
+                         arguments={"summary": "итог", "findings": [VALID_FINDING]}),
+                ToolCall(id="t1", name="list_files", arguments={}),
+            ),
+            text=None,
+        ),
+        list_files_call("t2"),
+        list_files_call("t3"),
+        submit_call([VALID_FINDING], call_id="c2"),
+    ])
+    findings = ReviewLoop(provider, tools).run("system", "user")
+    assert len(findings) == 1
+    first_round_tool_messages = {
+        m["tool_call_id"] for m in provider.calls[1] if m.get("role") == "tool"
+    }
+    assert first_round_tool_messages == {"s1", "t1"}
+
+
 def test_arguments_are_parsed_from_json_string(tools):
     payload = json.dumps({"summary": "s", "findings": []})
     provider = ScriptedProvider([
+        list_files_call("i1"), list_files_call("i2"), list_files_call("i3"),
         ProviderResponse(
             tool_calls=(ToolCall(id="c1", name="submit_findings", arguments=json.loads(payload)),),
             text=None,
-        )
+        ),
     ])
     assert ReviewLoop(provider, tools).run("system", "user") == []
 
@@ -190,6 +266,7 @@ def test_arguments_are_parsed_from_json_string(tools):
 def test_loop_serves_sibling_tool_calls_when_submit_in_same_batch_is_invalid(tools):
     broken = {"category": "bug"}
     provider = ScriptedProvider([
+        list_files_call("i1"), list_files_call("i2"), list_files_call("i3"),
         ProviderResponse(
             tool_calls=(
                 ToolCall(
@@ -226,6 +303,8 @@ def test_loop_reports_invalid_argument_type_to_the_model(tools):
             ),
             text=None,
         ),
+        list_files_call("t2"),
+        list_files_call("t3"),
         submit_call([]),
     ])
     findings = ReviewLoop(provider, tools).run("system", "user")

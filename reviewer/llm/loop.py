@@ -15,11 +15,23 @@ from reviewer.tools import TOOL_SCHEMAS, RepoTools, ToolError
 
 MAX_SCHEMA_RETRIES = 1
 MAX_TEXT_REMINDERS = 2
+MIN_INVESTIGATION_CALLS = 3
+MAX_INVESTIGATION_REMINDERS = 2
 
 TOOL_REQUIRED_REMINDER = (
     "Ты обязан вызвать инструмент: read_file, grep, list_files или submit_findings. "
     "Обычный текст недопустим."
 )
+
+INVESTIGATION_REQUIRED_REMINDER = (
+    "Ты не проверил код инструментами. Прежде чем сдавать вердикт, открой "
+    "изменённые файлы целиком, найди тесты на новые функции через grep по "
+    "*_test.go, проверь язык комментариев."
+)
+
+# Names of the read-only investigation tools (read_file/grep/list_files) - distinct
+# from submit_findings, which is the verdict itself, not investigation.
+INVESTIGATION_TOOL_NAMES = frozenset(schema["function"]["name"] for schema in TOOL_SCHEMAS)
 
 
 class ReviewIncomplete(Exception):
@@ -45,6 +57,8 @@ class ReviewLoop:
         available = [*TOOL_SCHEMAS, SUBMIT_FINDINGS_TOOL]
         schema_retries = 0
         text_reminders = 0
+        investigation_reminders = 0
+        investigation_calls = 0
 
         for _ in range(self._max_iterations):
             response = self._provider.complete(messages, available)
@@ -60,6 +74,25 @@ class ReviewLoop:
 
             submit = next((c for c in response.tool_calls if c.name == "submit_findings"), None)
             if submit is not None:
+                # A verdict formed without reading any code is a guess, not a review.
+                # Nudge the model to investigate first; after MAX_INVESTIGATION_REMINDERS
+                # give up nudging and accept whatever verdict it hands us - further
+                # blocking would only burn tokens with no guarantee of compliance.
+                if (
+                    investigation_calls < MIN_INVESTIGATION_CALLS
+                    and investigation_reminders < MAX_INVESTIGATION_REMINDERS
+                ):
+                    investigation_reminders += 1
+                    messages.append(_assistant_message(response.tool_calls))
+                    messages.append(_tool_message(submit.id, INVESTIGATION_REQUIRED_REMINDER))
+                    for call in response.tool_calls:
+                        if call.id == submit.id:
+                            continue
+                        messages.append(_tool_message(call.id, self._serve(call)))
+                        if call.name in INVESTIGATION_TOOL_NAMES:
+                            investigation_calls += 1
+                    continue
+
                 try:
                     return parse_findings(submit.arguments)
                 except FindingsSchemaError as exc:
@@ -72,11 +105,15 @@ class ReviewLoop:
                         if call.id == submit.id:
                             continue
                         messages.append(_tool_message(call.id, self._serve(call)))
+                        if call.name in INVESTIGATION_TOOL_NAMES:
+                            investigation_calls += 1
                     continue
 
             messages.append(_assistant_message(response.tool_calls))
             for call in response.tool_calls:
                 messages.append(_tool_message(call.id, self._serve(call)))
+                if call.name in INVESTIGATION_TOOL_NAMES:
+                    investigation_calls += 1
 
         raise ReviewIncomplete("model never called submit_findings")
 
