@@ -29,6 +29,10 @@ class Config:
     model_high_risk: str = ""
     high_risk_paths: tuple[str, ...] = ()
     limits: Limits = field(default_factory=Limits)
+    # Per-model USD price per million tokens, e.g. {"gpt-x": {"input": 0.75,
+    # "output": 4.50, "cached_input": 0.50}}. A model with no entry here still
+    # gets its token counts reported, just without a cost figure.
+    pricing: dict[str, dict[str, float]] = field(default_factory=dict)
 
     def validate(self) -> "Config":
         if self.provider != "openai":
@@ -63,5 +67,6 @@ def load_config(path: Path) -> Config:
             max_files=limits_raw.get("max_files", defaults.max_files),
             max_changed_lines=limits_raw.get("max_changed_lines", defaults.max_changed_lines),
         ),
+        pricing=raw.get("pricing") or {},
     )
     return config.validate()

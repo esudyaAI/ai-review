@@ -18,6 +18,7 @@ from reviewer.gate import decide
 from reviewer.gitlab_client import GitLabClient
 from reviewer.llm.loop import ReviewIncomplete, ReviewLoop
 from reviewer.llm.openai_provider import OpenAIProvider
+from reviewer.llm.usage import UsageTracker, report_lines
 from reviewer.prompt_builder import build_system_prompt, build_user_prompt
 from reviewer.tools import RepoTools
 
@@ -129,9 +130,12 @@ def main(argv: list[str] | None = None) -> int:
         repo = Path(os.environ.get("CI_PROJECT_DIR", "."))
         config = load_config(repo / ".ai-review.yml")
         api_key = os.environ["OPENAI_API_KEY"]
+        usage_tracker = UsageTracker()
 
         def make_provider(model: str) -> OpenAIProvider:
-            return OpenAIProvider(api_key=api_key, base_url=config.base_url, model=model)
+            return OpenAIProvider(
+                api_key=api_key, base_url=config.base_url, model=model, usage_tracker=usage_tracker
+            )
 
         client = GitLabClient(
             api_url=os.environ["CI_API_V4_URL"],
@@ -140,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
             client=httpx.Client(timeout=60.0),
         )
         tools = RepoTools(root=repo)
-        return review(
+        code = review(
             config,
             repo,
             client,
@@ -148,6 +152,12 @@ def main(argv: list[str] | None = None) -> int:
             _adjudicator_for(config, make_provider),
             args.mr,
         )
+        stdout_lines, stderr_warnings = report_lines(usage_tracker.by_model(), config.pricing)
+        for line in stdout_lines:
+            print(line)
+        for warning in stderr_warnings:
+            print(warning, file=sys.stderr)
+        return code
     except Exception as exc:  # noqa: BLE001 - startup/config/env failures are technical, not a verdict
         print(f"AI review: техническая ошибка при старте: {exc}", file=sys.stderr)
         return EXIT_TECHNICAL
