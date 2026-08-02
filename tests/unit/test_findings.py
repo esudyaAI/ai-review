@@ -26,9 +26,13 @@ def make_finding(**overrides) -> Finding:
     return Finding(**data)
 
 
-def test_fingerprint_is_stable_and_ignores_wording_noise():
+def test_fingerprint_ignores_title_wording_entirely():
+    # The model rephrases the same finding differently across runs - fingerprint
+    # must not depend on title at all, or the same defect mints a new fingerprint
+    # every run (old thread looks "gone" and gets auto-resolved, a duplicate
+    # appears next to it).
     a = make_finding(title="Ошибка Stripe API проглатывается")
-    b = make_finding(title="  ОШИБКА   Stripe API проглатывается  ")
+    b = make_finding(title="В обработчике платежа Stripe теряется ошибка ответа")
     assert a.fingerprint == b.fingerprint
     assert len(a.fingerprint) == 16
 
@@ -37,6 +41,18 @@ def test_fingerprint_changes_with_file_and_category():
     base = make_finding()
     assert base.fingerprint != make_finding(file="internal/user/user.go").fingerprint
     assert base.fingerprint != make_finding(category="security").fingerprint
+
+
+def test_fingerprint_is_stable_within_a_ten_line_window():
+    base = make_finding(line_start=142)
+    assert base.fingerprint == make_finding(line_start=140).fingerprint
+    assert base.fingerprint == make_finding(line_start=149).fingerprint
+
+
+def test_fingerprint_changes_across_a_ten_line_window_boundary():
+    base = make_finding(line_start=142)
+    assert base.fingerprint != make_finding(line_start=150).fingerprint
+    assert base.fingerprint != make_finding(line_start=139).fingerprint
 
 
 def test_comment_roundtrips_through_marker():
