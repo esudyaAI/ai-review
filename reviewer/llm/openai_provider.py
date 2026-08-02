@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+import sys
 
-from openai import OpenAI
+from openai import BadRequestError, OpenAI
 
 from reviewer.llm.base import ProviderResponse, ToolCall
 
@@ -15,12 +16,30 @@ class OpenAIProvider:
         self._model = model
 
     def complete(self, messages: list[dict], tools: list[dict]) -> ProviderResponse:
-        response = self._client.chat.completions.create(
-            model=self._model,
-            messages=messages,
-            tools=tools,
-            tool_choice="auto",
-        )
+        # A plain-text answer has no meaning in our protocol: the model must always
+        # either call a read tool or submit_findings. tool_choice="required" enforces
+        # that at the API level instead of relying on the model to follow the prompt.
+        try:
+            response = self._client.chat.completions.create(
+                model=self._model,
+                messages=messages,
+                tools=tools,
+                tool_choice="required",
+            )
+        except BadRequestError as exc:
+            # Not every OpenAI-compatible backend supports tool_choice="required" -
+            # fall back to "auto" rather than failing the whole review over it.
+            print(
+                f"AI review: провайдер отклонил tool_choice='required' ({exc}), "
+                "повтор с 'auto'",
+                file=sys.stderr,
+            )
+            response = self._client.chat.completions.create(
+                model=self._model,
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+            )
         message = response.choices[0].message
         calls = []
         for call in message.tool_calls or []:

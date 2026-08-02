@@ -1,0 +1,63 @@
+import json
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import httpx
+import pytest
+from openai import BadRequestError
+
+from reviewer.llm.openai_provider import OpenAIProvider
+
+
+def make_response(tool_calls=(), content=None):
+    message = SimpleNamespace(tool_calls=tool_calls or None, content=content)
+    choice = SimpleNamespace(message=message)
+    return SimpleNamespace(choices=[choice])
+
+
+def make_tool_call(call_id, name, arguments):
+    function = SimpleNamespace(name=name, arguments=json.dumps(arguments))
+    return SimpleNamespace(id=call_id, function=function)
+
+
+def make_bad_request_error() -> BadRequestError:
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    return BadRequestError(
+        "tool_choice='required' is not supported",
+        response=httpx.Response(400, request=request),
+        body=None,
+    )
+
+
+@pytest.fixture()
+def provider():
+    return OpenAIProvider(api_key="test-key", base_url="https://api.openai.com/v1", model="test-model")
+
+
+def test_complete_requests_tool_choice_required(provider):
+    response = make_response(tool_calls=[make_tool_call("c1", "list_files", {"path_glob": "*.go"})])
+    with patch.object(provider._client.chat.completions, "create", return_value=response) as mock_create:
+        result = provider.complete([{"role": "user", "content": "go"}], [{"type": "function"}])
+
+    assert mock_create.call_count == 1
+    assert mock_create.call_args.kwargs["tool_choice"] == "required"
+    assert result.tool_calls[0].name == "list_files"
+    assert result.tool_calls[0].arguments == {"path_glob": "*.go"}
+
+
+def test_falls_back_to_auto_when_required_is_rejected(provider, capsys):
+    fallback_response = make_response(
+        tool_calls=[make_tool_call("c1", "submit_findings", {"summary": "s", "findings": []})]
+    )
+    with patch.object(
+        provider._client.chat.completions,
+        "create",
+        side_effect=[make_bad_request_error(), fallback_response],
+    ) as mock_create:
+        result = provider.complete([{"role": "user", "content": "go"}], [{"type": "function"}])
+
+    assert mock_create.call_count == 2
+    assert mock_create.call_args_list[0].kwargs["tool_choice"] == "required"
+    assert mock_create.call_args_list[1].kwargs["tool_choice"] == "auto"
+    assert result.tool_calls[0].name == "submit_findings"
+    assert "tool_choice='required'" in capsys.readouterr().err

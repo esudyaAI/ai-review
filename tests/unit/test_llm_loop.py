@@ -154,6 +154,28 @@ def test_loop_fails_when_model_answers_with_plain_text(tools):
         ReviewLoop(provider, tools, max_iterations=1).run("system", "user")
 
 
+def test_loop_recovers_after_one_plain_text_response(tools):
+    provider = ScriptedProvider([
+        ProviderResponse(tool_calls=(), text="всё хорошо, замечаний нет"),
+        submit_call([]),
+    ])
+    findings = ReviewLoop(provider, tools).run("system", "user")
+    assert findings == []
+    reminder_messages = [m for m in provider.calls[-1] if m.get("role") == "user"]
+    assert any("обязан вызвать инструмент" in m["content"] for m in reminder_messages)
+
+
+def test_loop_fails_after_three_consecutive_text_responses(tools):
+    provider = ScriptedProvider([
+        ProviderResponse(tool_calls=(), text="раз"),
+        ProviderResponse(tool_calls=(), text="два"),
+        ProviderResponse(tool_calls=(), text="три"),
+    ])
+    with pytest.raises(ReviewIncomplete):
+        ReviewLoop(provider, tools, max_iterations=3).run("system", "user")
+    assert len(provider.calls) == 3
+
+
 def test_arguments_are_parsed_from_json_string(tools):
     payload = json.dumps({"summary": "s", "findings": []})
     provider = ScriptedProvider([
