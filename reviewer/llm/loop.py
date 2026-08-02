@@ -14,6 +14,12 @@ from reviewer.llm.base import LLMProvider, ToolCall
 from reviewer.tools import TOOL_SCHEMAS, RepoTools, ToolError
 
 MAX_SCHEMA_RETRIES = 1
+MAX_TEXT_REMINDERS = 2
+
+TOOL_REQUIRED_REMINDER = (
+    "Ты обязан вызвать инструмент: read_file, grep, list_files или submit_findings. "
+    "Обычный текст недопустим."
+)
 
 
 class ReviewIncomplete(Exception):
@@ -38,11 +44,19 @@ class ReviewLoop:
         ]
         available = [*TOOL_SCHEMAS, SUBMIT_FINDINGS_TOOL]
         schema_retries = 0
+        text_reminders = 0
 
         for _ in range(self._max_iterations):
             response = self._provider.complete(messages, available)
             if not response.tool_calls:
-                raise ReviewIncomplete("model answered with plain text instead of submit_findings")
+                if text_reminders >= MAX_TEXT_REMINDERS:
+                    raise ReviewIncomplete(
+                        "model kept answering with plain text instead of calling a tool"
+                    )
+                text_reminders += 1
+                messages.append({"role": "assistant", "content": response.text or ""})
+                messages.append({"role": "user", "content": TOOL_REQUIRED_REMINDER})
+                continue
 
             submit = next((c for c in response.tool_calls if c.name == "submit_findings"), None)
             if submit is not None:
