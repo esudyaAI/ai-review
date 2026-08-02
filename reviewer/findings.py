@@ -37,12 +37,14 @@ class Finding:
 
     @property
     def fingerprint(self) -> str:
-        key = f"{self.category}|{self.file}|{_normalize_title(self.title)}"
+        # Deliberately excludes title: the model rephrases the same finding
+        # differently across runs, which used to mint a new fingerprint each time -
+        # the old thread looked "gone" and got auto-resolved while a duplicate was
+        # created next to it. Line is bucketed into a 10-line window so a small
+        # shift (e.g. an unrelated edit above it) doesn't do the same thing.
+        line_bucket = self.line_start // 10
+        key = f"{self.category}|{self.file}|{line_bucket}"
         return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
-
-
-def _normalize_title(title: str) -> str:
-    return re.sub(r"\s+", " ", title).strip().lower()
 
 
 def render_comment(finding: Finding) -> str:

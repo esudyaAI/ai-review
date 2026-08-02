@@ -176,10 +176,13 @@ def test_create_discussion_failure_does_not_abort_the_run(tmp_path, capsys):
     """A GitLab failure (network blip, 500, etc.) publishing one finding must not hide
     every other finding or crash review() - each mutating call is isolated, and the exit
     code still reflects the real blocking findings regardless of publishing success."""
+    # Different line buckets (10-line windows) so each finding gets a distinct
+    # fingerprint - fingerprint no longer depends on title.
     findings = [
         Finding(
-            category="bug", file="a.go", line_start=2, line_end=2, title=f"Ошибка {i}",
-            problem="p", evidence="e", suggested_fix="s", confidence="high",
+            category="bug", file="a.go", line_start=2 + i * 10, line_end=2 + i * 10,
+            title=f"Ошибка {i}", problem="p", evidence="e", suggested_fix="s",
+            confidence="high",
         )
         for i in range(3)
     ]
