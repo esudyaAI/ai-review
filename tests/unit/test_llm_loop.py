@@ -355,3 +355,34 @@ def test_loop_stats_start_at_zero_before_a_run(tmp_path):
     loop = ReviewLoop(ScriptedProvider([submit_call([])]), RepoTools(root=tmp_path))
 
     assert (loop.stats.iterations, loop.stats.tool_calls, loop.stats.tool_result_bytes) == (0, 0, 0)
+
+
+class ExplodingProvider:
+    """Answers once, then fails - a transient API error mid-run."""
+
+    def __init__(self, first):
+        self._first = first
+        self.calls = 0
+
+    def complete(self, messages, tools):
+        self.calls += 1
+        if self.calls == 1:
+            return self._first
+        raise RuntimeError("provider is down")
+
+
+def test_iteration_is_counted_only_after_the_model_answered(tmp_path):
+    """A counter that ticks before the call reports round trips that never happened.
+    For a number whose whole job is to explain where the tokens went, an inflated
+    count is worse than no count. Found by review on !8."""
+    (tmp_path / "main.go").write_text("package main\n", encoding="utf-8")
+    read = ProviderResponse(
+        tool_calls=(ToolCall(id="t1", name="read_file", arguments={"path": "main.go"}),),
+        text=None,
+    )
+    loop = ReviewLoop(ExplodingProvider(read), RepoTools(root=tmp_path))
+
+    with pytest.raises(RuntimeError):
+        loop.run("system", "user")
+
+    assert loop.stats.iterations == 1
