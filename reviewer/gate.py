@@ -7,6 +7,7 @@ from typing import Sequence
 
 from reviewer.findings import Finding
 from reviewer.gitlab_client import Discussion
+from reviewer.testlayout import can_hold_a_test
 
 
 @dataclass(frozen=True)
@@ -17,6 +18,7 @@ class GateDecision:
     kept_open: tuple[str, ...]
     suppressed: tuple[tuple[str, str], ...] = ()
     folded: tuple[tuple[str, str], ...] = ()
+    not_applicable: tuple[tuple[str, str], ...] = ()
 
     @property
     def blocking_count(self) -> int:
@@ -32,6 +34,18 @@ def decide(
     discussions: Sequence[Discussion],
     changed_files: Sequence[str],
 ) -> GateDecision:
+    # A `tests` finding on a file with nothing to call asks for a unit test of
+    # somebody else's configuration format. Three of them landed on one
+    # .gitlab-ci.yml in !12. The category cannot apply, so the finding is dropped
+    # before it reaches the merge request - and reported, because a silently
+    # dropped finding is how real ones get lost.
+    not_applicable = tuple(sorted(
+        {(f.category, f.file) for f in findings
+         if f.category == "tests" and not can_hold_a_test(f.file)}
+    ))
+    findings = [f for f in findings
+                if not (f.category == "tests" and not can_hold_a_test(f.file))]
+
     ours = [d for d in discussions if d.fingerprint is not None and not d.resolved]
     open_by_fp = {d.fingerprint: d for d in ours}
     found_by_fp = {f.fingerprint: f for f in findings}
@@ -121,4 +135,5 @@ def decide(
         kept_open=tuple(kept_open),
         suppressed=suppressed,
         folded=folded,
+        not_applicable=not_applicable,
     )
