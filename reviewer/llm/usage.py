@@ -72,7 +72,7 @@ def cost_for(model: str, usage: ModelUsage, pricing: dict[str, dict[str, float]]
     return cost / 1_000_000
 
 
-def breakdown_line(by_phase: dict[str, ModelUsage], loop_stats=None) -> str | None:
+def breakdown_line(by_phase: dict[str, ModelUsage]) -> str | None:
     """One line naming where the input tokens went, or None when there is nothing
     to split: with a single phase the number is already on the cost line, and
     repeating it would only add noise."""
@@ -86,14 +86,21 @@ def breakdown_line(by_phase: dict[str, ModelUsage], loop_stats=None) -> str | No
         share = round(100 * usage.prompt_tokens / total)
         parts.append(f"{PHASE_LABELS.get(name, name)} {usage.prompt_tokens} ({share}%)")
 
-    line = "AI review: разбивка входа — " + ", ".join(parts)
-    if loop_stats is not None:
-        line += (
-            f"; итераций ревью {loop_stats.iterations}, "
-            f"вызовов инструментов {loop_stats.tool_calls}, "
-            f"прочитано {loop_stats.tool_result_bytes} байт"
-        )
-    return line
+    return "AI review: разбивка входа — " + ", ".join(parts)
+
+
+def loop_line(loop_stats) -> str:
+    """The shape of the review pass: how many round trips it took and how much
+    repository content it pulled in.
+
+    Deliberately independent of the phase breakdown. A run with no disputed
+    threads has one phase - and it is the ordinary case, the one whose numbers
+    are most worth seeing."""
+    return (
+        f"AI review: цикл ревью — итераций ревью {loop_stats.iterations}, "
+        f"вызовов инструментов {loop_stats.tool_calls}, "
+        f"прочитано {loop_stats.tool_result_bytes} байт"
+    )
 
 
 def report_lines(
@@ -127,7 +134,9 @@ def report_lines(
             )
 
     if by_phase:
-        line = breakdown_line(by_phase, loop_stats)
+        line = breakdown_line(by_phase)
         if line is not None:
             stdout_lines.append(line)
+    if loop_stats is not None:
+        stdout_lines.append(loop_line(loop_stats))
     return stdout_lines, stderr_warnings
