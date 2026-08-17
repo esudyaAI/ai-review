@@ -27,7 +27,7 @@ class Discussion:
     resolved: bool
 
     @property
-    def _marker(self) -> tuple[str, str] | None:
+    def _marker(self) -> tuple[str, str, str | None] | None:
         if not self.notes:
             return None
         return extract_marker(self.notes[0].body)
@@ -41,6 +41,12 @@ class Discussion:
     def file(self) -> str | None:
         marker = self._marker
         return marker[1] if marker else None
+
+    @property
+    def category(self) -> str | None:
+        """None on threads created before the category was written into the marker."""
+        marker = self._marker
+        return marker[2] if marker else None
 
     @property
     def has_human_reply(self) -> bool:

@@ -60,7 +60,7 @@ def test_comment_roundtrips_through_marker():
     body = render_comment(finding)
     assert finding.title in body
     assert finding.suggested_fix in body
-    assert extract_marker(body) == (finding.fingerprint, finding.file)
+    assert extract_marker(body) == (finding.fingerprint, finding.file, finding.category)
 
 
 def test_extract_marker_returns_none_for_human_comment():
@@ -154,3 +154,10 @@ def test_parse_findings_rejects_non_string_fields(field, invalid_value):
     payload["findings"][0][field] = invalid_value
     with pytest.raises(FindingsSchemaError):
         parse_findings(payload)
+
+
+# Треды, заведённые до появления cat= в маркере, обязаны разбираться и дальше:
+# иначе после выката новой версии вся прежняя история отпечатков станет чужой.
+def test_marker_without_category_is_still_parsed():
+    legacy = "<!-- ai-review:fp=0123456789abcdef;file=internal/service/a.go -->"
+    assert extract_marker(legacy) == ("0123456789abcdef", "internal/service/a.go", None)

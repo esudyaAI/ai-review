@@ -109,3 +109,57 @@ def test_human_reply_with_disappeared_finding_in_untouched_file_goes_to_adjudica
     assert result.to_adjudicate == (f"d-{f.fingerprint}",)
     assert result.to_resolve == ()
     assert result.kept_open == (f"d-{f.fingerprint}",)
+
+
+def _at_line(f: Finding, line: int) -> Finding:
+    return Finding(
+        category=f.category, file=f.file, line_start=line, line_end=line, title=f.title,
+        problem=f.problem, evidence=f.evidence, suggested_fix=f.suggested_fix,
+        confidence=f.confidence,
+    )
+
+
+# Наблюдено на MR !29 в jobbytime-go: замечание про тест Redis-репозитория было
+# закрыто автором с обоснованием, следующий прогон нашёл его снова и завёл новый
+# тред. Отпечаток считается от окна строк (line_start // 10), а пуш сдвинул файл,
+# поэтому «принятый аргумент» перестал узнаваться. Правило двух кругов при этом
+# не разрывает цикл: каждый прогон — новый отпечаток.
+def test_accepted_argument_survives_line_shift():
+    original = finding(file="internal/repository/redis/redis_repository.go", category="tests")
+    closed = discussion_for(original, resolved=True, human_reply=True)
+
+    shifted = _at_line(original, 89)
+    assert shifted.fingerprint != original.fingerprint, "иначе тест ничего не проверяет"
+
+    result = decide([shifted], [closed], ["internal/repository/redis/redis_repository.go"])
+    assert result.to_create == ()
+    assert result.suppressed == (("tests", "internal/repository/redis/redis_repository.go"),)
+
+
+def test_accepted_argument_does_not_suppress_other_categories():
+    original = finding(file="a.go", category="tests")
+    closed = discussion_for(original, resolved=True, human_reply=True)
+
+    other = _at_line(finding(file="a.go", category="bug"), 89)
+    result = decide([other], [closed], ["a.go"])
+    assert [f.category for f in result.to_create] == ["bug"]
+
+
+def test_accepted_argument_does_not_suppress_other_files():
+    original = finding(file="a.go", category="tests")
+    closed = discussion_for(original, resolved=True, human_reply=True)
+
+    other = _at_line(finding(file="b.go", category="tests"), 89)
+    result = decide([other], [closed], ["a.go", "b.go"])
+    assert [f.file for f in result.to_create] == ["b.go"]
+
+
+# Тред, закрытый самим ревьюером, потому что находка перестала воспроизводиться,
+# решения человека не несёт: вернувшаяся регрессия должна блокировать снова.
+def test_auto_resolved_thread_does_not_suppress_after_shift():
+    original = finding(file="a.go", category="tests")
+    auto_closed = discussion_for(original, resolved=True, human_reply=False)
+
+    shifted = _at_line(original, 89)
+    result = decide([shifted], [auto_closed], ["a.go"])
+    assert [f.file for f in result.to_create] == ["a.go"]

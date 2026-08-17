@@ -105,6 +105,12 @@ def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int, 
     # created_count/resolved_count in the summary line below are the actual counts of
     # successful GitLab mutations, not the planned ones, so the printed summary matches
     # what a reviewer will actually see in the merge request.
+    # A suppressed finding must never be silent: the whole point of the scope rule
+    # is that it can hide a real, different problem in the same file.
+    for category, path in decision.suppressed:
+        print(f"AI review: находка [{category}] в {path} подавлена — "
+              f"по этой паре (категория, файл) аргумент автора уже принят")
+
     blocking_left = decision.blocking_count - len(accepted)
     print(f"AI review: новых замечаний {created_count}, "
           f"закрыто {resolved_count}, "
