@@ -407,3 +407,28 @@ def test_all_high_risk_diff_with_empty_strong_model_is_still_reviewed(tmp_path):
     review(config, tmp_path, FakeClient(mr), factory, lambda d: None, mr_iid=7)
 
     assert factory.calls == [("mini", ("internal/service/auth_a.go",))]
+
+
+# A diff with nothing high-risk must skip the strong pass and still carry every
+# file into the base one. test_a_single_sided_diff_is_one_pass shows the skip on
+# a one-file diff; this one shows that subset() does not lose files on the way.
+def test_diff_without_high_risk_files_reviews_all_of_them_in_one_pass(tmp_path):
+    mr = MergeRequestDiff(
+        base_sha="b" * 40, head_sha="h" * 40, start_sha="s" * 40,
+        files=(
+            FileDiff("internal/stats/pipeline_stats.go", "internal/stats/pipeline_stats.go",
+                     "@@ -1,1 +1,2 @@\n x\n+y\n", (2,)),
+            FileDiff("internal/vacancies/updater.go", "internal/vacancies/updater.go",
+                     "@@ -1,1 +1,2 @@\n x\n+z\n", (2,)),
+            FileDiff("README.md", "README.md", "@@ -1,1 +1,2 @@\n x\n+w\n", (2,)),
+        ),
+    )
+    config = make_config(model="mini", model_high_risk="strong",
+                         high_risk_paths=("internal/service/auth_*", "*stripe*"))
+    factory = RecordingReviewerFactory()
+
+    review(config, tmp_path, FakeClient(mr), factory, lambda d: None, mr_iid=7)
+
+    assert factory.calls == [("mini", (
+        "internal/stats/pipeline_stats.go", "internal/vacancies/updater.go", "README.md",
+    ))]
