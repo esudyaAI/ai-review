@@ -72,6 +72,24 @@ def cost_for(model: str, usage: ModelUsage, pricing: dict[str, dict[str, float]]
     return cost / 1_000_000
 
 
+def merge_loop_stats(all_stats):
+    """One set of counters for a review that ran in more than one pass.
+
+    Since the diff is split by risk, a run has a loop per half. Reporting only the
+    first half's counters would understate the shape of the run exactly when it
+    matters - a big diff is precisely the one that gets split.
+    """
+    stats = list(all_stats)
+    if not stats:
+        return None
+    merged = type(stats[0])()
+    for one in stats:
+        merged.iterations += one.iterations
+        merged.tool_calls += one.tool_calls
+        merged.tool_result_bytes += one.tool_result_bytes
+    return merged
+
+
 def breakdown_line(by_phase: dict[str, ModelUsage]) -> str | None:
     """One line naming where the input tokens went, or None when there is nothing
     to split: with a single phase the number is already on the cost line, and

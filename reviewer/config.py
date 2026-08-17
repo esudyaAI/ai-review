@@ -41,13 +41,37 @@ class Config:
             raise ConfigError("model must not be empty")
         return self
 
+    def is_high_risk(self, path: str) -> bool:
+        return any(
+            fnmatch(path, pattern) or fnmatch(path, pattern.replace("/**", "/*"))
+            for pattern in self.high_risk_paths
+        )
+
     def model_for(self, changed_files: Iterable[str]) -> str:
-        # A single high-risk file pulls the whole review to the stronger model.
-        for path in changed_files:
-            for pattern in self.high_risk_paths:
-                if fnmatch(path, pattern) or fnmatch(path, pattern.replace("/**", "/*")):
-                    return self.model_high_risk or self.model
-        return self.model
+        # Still used for adjudication, where the subject is a single file.
+        return self.model_high_risk or self.model if any(
+            self.is_high_risk(path) for path in changed_files
+        ) else self.model
+
+    def split_by_risk(self, changed_files: Iterable[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """(high risk, everything else), original order preserved.
+
+        A single high-risk file used to pull the whole diff to the stronger model:
+        one auth file in a nine-file merge request meant all nine were reviewed at
+        $30/M output instead of $4.50/M. Splitting lets each half be reviewed by the
+        model its own risk deserves, without narrowing high_risk_paths - narrowing
+        would buy the same saving by looking away from risky files.
+
+        With no distinct strong model there is nothing to route to, and a second
+        pass would only double the fixed cost of a review, so everything stays in
+        one half.
+        """
+        paths = tuple(changed_files)
+        if not self.model_high_risk or self.model_high_risk == self.model:
+            return (), paths
+        high = tuple(p for p in paths if self.is_high_risk(p))
+        rest = tuple(p for p in paths if not self.is_high_risk(p))
+        return high, rest
 
 
 def load_config(path: Path) -> Config:

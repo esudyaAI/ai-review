@@ -285,3 +285,92 @@ def test_main_returns_technical_error_on_broken_config(tmp_path, monkeypatch):
 
     code = main(["review", "--mr", "7"])
     assert code == EXIT_TECHNICAL
+
+
+def make_mixed_mr():
+    return MergeRequestDiff(
+        base_sha="b" * 40, head_sha="h" * 40, start_sha="s" * 40,
+        files=(
+            FileDiff("internal/service/auth_service.go", "internal/service/auth_service.go",
+                     "@@ -1,1 +1,2 @@\n x\n+y\n", (2,)),
+            FileDiff("internal/stats/pipeline_stats.go", "internal/stats/pipeline_stats.go",
+                     "@@ -1,1 +1,2 @@\n x\n+z\n", (2,)),
+        ),
+    )
+
+
+class RecordingReviewerFactory:
+    """Remembers which model was asked to review which files."""
+
+    def __init__(self, findings_by_model=None):
+        self.calls: list[tuple[str, tuple[str, ...]]] = []
+        self._findings = findings_by_model or {}
+
+    def __call__(self, model):
+        factory = self
+
+        class _Reviewer:
+            def run(self_inner, system_prompt, user_prompt):
+                files = tuple(
+                    line[2:] for line in user_prompt.splitlines() if line.startswith("- ")
+                )
+                factory.calls.append((model, files))
+                return list(factory._findings.get(model, []))
+
+        return _Reviewer()
+
+
+# The cost driver, measured on jobbytime-go !29: one auth file made the strong
+# model review all nine files in the diff. Each half must now go to its own model.
+def test_high_risk_files_are_reviewed_separately_from_the_rest(tmp_path):
+    config = make_config(model="mini", model_high_risk="strong",
+                         high_risk_paths=("internal/service/auth_*",))
+    factory = RecordingReviewerFactory()
+    client = FakeClient(make_mixed_mr())
+
+    review(config, tmp_path, client, factory, lambda d: None, mr_iid=7)
+
+    assert dict(factory.calls) == {
+        "strong": ("internal/service/auth_service.go",),
+        "mini": ("internal/stats/pipeline_stats.go",),
+    }
+
+
+def test_findings_from_both_passes_are_reported(tmp_path):
+    high = Finding(category="security", file="internal/service/auth_service.go", line_start=2,
+                   line_end=2, title="Дыра", problem="p", evidence="e", suggested_fix="s",
+                   confidence="high")
+    low = Finding(category="bug", file="internal/stats/pipeline_stats.go", line_start=2,
+                  line_end=2, title="Течёт", problem="p", evidence="e", suggested_fix="s",
+                  confidence="high")
+    config = make_config(model="mini", model_high_risk="strong",
+                         high_risk_paths=("internal/service/auth_*",))
+    client = FakeClient(make_mixed_mr())
+
+    code = review(config, tmp_path, client,
+                  RecordingReviewerFactory({"strong": [high], "mini": [low]}),
+                  lambda d: None, mr_iid=7)
+
+    assert code == EXIT_FINDINGS
+    assert sorted(f.title for f in client.created) == ["Дыра", "Течёт"]
+
+
+# A diff that is entirely high-risk, or entirely not, must stay a single pass:
+# an empty half would otherwise pay a whole review for no files.
+def test_a_single_sided_diff_is_one_pass(tmp_path):
+    config = make_config(model="mini", model_high_risk="strong",
+                         high_risk_paths=("internal/service/auth_*",))
+    factory = RecordingReviewerFactory()
+
+    review(config, tmp_path, FakeClient(make_mr()), factory, lambda d: None, mr_iid=7)
+    assert factory.calls == [("mini", ("a.go",))]
+
+
+def test_without_a_distinct_strong_model_there_is_one_pass(tmp_path):
+    config = make_config(model="mini", model_high_risk="mini",
+                         high_risk_paths=("internal/service/auth_*",))
+    factory = RecordingReviewerFactory()
+
+    review(config, tmp_path, FakeClient(make_mixed_mr()), factory, lambda d: None, mr_iid=7)
+    assert len(factory.calls) == 1
+    assert factory.calls[0][0] == "mini"

@@ -87,3 +87,26 @@ def test_parse_new_lines_ignores_no_newline_marker():
     # Diff with "\ No newline at end of file" should ignore it
     diff = "@@ -1,2 +1,2 @@\n-a\n+A\n\\ No newline at end of file\n"
     assert parse_new_lines(diff) == (1,)
+
+
+def test_subset_keeps_only_the_named_files_and_the_shas():
+    mr = MergeRequestDiff(
+        base_sha="b" * 40, head_sha="h" * 40, start_sha="s" * 40,
+        files=(
+            FileDiff("a.go", "a.go", "@@ -1,1 +1,2 @@\n x\n+y\n", (2,)),
+            FileDiff("b.go", "b.go", "@@ -1,1 +1,2 @@\n x\n+z\n", (2,)),
+        ),
+    )
+
+    only_b = mr.subset(("b.go",))
+    assert only_b.changed_files == ("b.go",)
+    assert (only_b.base_sha, only_b.head_sha, only_b.start_sha) == (mr.base_sha, mr.head_sha, mr.start_sha)
+    assert mr.changed_files == ("a.go", "b.go"), "the original must not be mutated"
+
+
+def test_subset_of_nothing_is_empty():
+    mr = MergeRequestDiff(
+        base_sha="b" * 40, head_sha="h" * 40, start_sha="s" * 40,
+        files=(FileDiff("a.go", "a.go", "@@ -1,1 +1,2 @@\n x\n+y\n", (2,)),),
+    )
+    assert mr.subset(()).files == ()
