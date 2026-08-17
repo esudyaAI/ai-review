@@ -374,3 +374,36 @@ def test_without_a_distinct_strong_model_there_is_one_pass(tmp_path):
     review(config, tmp_path, FakeClient(make_mixed_mr()), factory, lambda d: None, mr_iid=7)
     assert len(factory.calls) == 1
     assert factory.calls[0][0] == "mini"
+
+
+# An empty model_high_risk must never reach the provider as a model name. The
+# guard that prevents it is the empty high-risk half plus the `if not files:
+# continue` skip, which is easy to read as "the first pass runs anyway".
+def test_empty_strong_model_never_reaches_the_provider(tmp_path):
+    config = make_config(model="mini", model_high_risk="",
+                         high_risk_paths=("internal/service/auth_*",))
+    factory = RecordingReviewerFactory()
+
+    code = review(config, tmp_path, FakeClient(make_mixed_mr()), factory,
+                  lambda d: None, mr_iid=7)
+
+    assert code == EXIT_CLEAN
+    assert [model for model, _ in factory.calls] == ["mini"]
+    assert factory.calls[0][1] == (
+        "internal/service/auth_service.go", "internal/stats/pipeline_stats.go",
+    ), "an all-high-risk diff must still be reviewed, by the base model"
+
+
+def test_all_high_risk_diff_with_empty_strong_model_is_still_reviewed(tmp_path):
+    mr = MergeRequestDiff(
+        base_sha="b" * 40, head_sha="h" * 40, start_sha="s" * 40,
+        files=(FileDiff("internal/service/auth_a.go", "internal/service/auth_a.go",
+                        "@@ -1,1 +1,2 @@\n x\n+y\n", (2,)),),
+    )
+    config = make_config(model="mini", model_high_risk="",
+                         high_risk_paths=("internal/service/auth_*",))
+    factory = RecordingReviewerFactory()
+
+    review(config, tmp_path, FakeClient(mr), factory, lambda d: None, mr_iid=7)
+
+    assert factory.calls == [("mini", ("internal/service/auth_a.go",))]
