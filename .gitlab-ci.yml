@@ -1,7 +1,36 @@
 include:
   - local: templates/ai-review.yml
+    # The reviewer gates jobbytime-go; it has no business exempting itself. A tool
+    # that blocks other people's merge requests and lets its own through on a
+    # warning is trusted less than it asks others to trust it.
+    #
+    # Two things make this safe to switch on here, and both are load-bearing:
+    #
+    # 1. `python -m reviewer` runs from the checked-out repository, whose own
+    #    `reviewer/` package shadows the one installed in the image. So this job
+    #    reviews the branch's code, not the last released `v1`. Confirmed on
+    #    2026-08-17: a log line added minutes earlier in a branch appeared in the
+    #    job while `v1` still pointed at the previous release. Consuming
+    #    repositories have no `reviewer/` directory, so there the image wins.
+    # 2. The escape hatch is this very input. If a change breaks the reviewer so
+    #    badly that it cannot pass its own gate, set `allow_failure: true` in the
+    #    merge request that fixes it, and restore it in the same merge request
+    #    once green. That is a visible, reviewable act - unlike a permanent
+    #    exemption, which is invisible.
     inputs:
-      allow_failure: true
+      allow_failure: false
+
+# Without this block a push to a branch with an open merge request builds two
+# pipelines for the same commit, and only one of them is the one the merge
+# request shows. That is how `test` ended up running where nobody was looking:
+# in the push pipeline, while the merge request was gated by ai-review alone.
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS'
+      when: never
+    - if: '$CI_COMMIT_BRANCH'
+    - if: '$CI_COMMIT_TAG'
 
 stages:
   - test
@@ -14,6 +43,12 @@ test:
   stage: test
   image: python:3.12-slim
   interruptible: true
+  # A job without rules is branches-and-tags only, so this one did not run in
+  # merge request pipelines at all - the very pipeline the merge request is
+  # judged by. The unit tests were green in a pipeline nobody was reading.
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'
   script:
     - pip install -e ".[dev]"
     - python -m pytest -v
