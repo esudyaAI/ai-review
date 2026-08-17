@@ -76,8 +76,11 @@ class ReviewLoop:
         investigation_calls = 0
 
         for _ in range(self._max_iterations):
-            self.stats.iterations += 1
+            # Counted after the answer, not before it: a provider error would
+            # otherwise report a round trip that never happened, and this number
+            # exists precisely to explain where the tokens went.
             response = self._provider.complete(messages, available)
+            self.stats.iterations += 1
             if not response.tool_calls:
                 if text_reminders >= MAX_TEXT_REMINDERS:
                     raise ReviewIncomplete(
