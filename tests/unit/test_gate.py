@@ -220,3 +220,32 @@ def test_thread_is_still_resolved_when_nothing_reproduces():
     result = decide([], [open_thread], ["a.go"])
 
     assert open_thread.id in result.to_resolve
+
+
+# Scope matching cannot tell "the same finding, shifted" from "a different
+# finding of the same category in the same file" - the fingerprint is all we
+# have. The second one is therefore folded into the open thread instead of
+# getting its own. That is a deliberate cost, but it must not be silent: a
+# finding nobody ever sees is worse than a duplicate thread.
+def test_different_finding_in_the_same_scope_is_folded_and_reported():
+    first = finding(file="a.go", category="bug", title="Ошибка не проверяется")
+    open_thread = discussion_for(first)
+
+    second = Finding(
+        category="bug", file="a.go", line_start=89, line_end=89,
+        title="Индекс за границей среза", problem="другая проблема",
+        evidence="другое основание", suggested_fix="другая правка", confidence="high",
+    )
+
+    result = decide([second], [open_thread], ["a.go"])
+
+    assert result.to_create == ()
+    assert open_thread.id in result.kept_open
+    assert result.folded == (("bug", "a.go"),)
+
+
+def test_exact_match_is_not_reported_as_folded():
+    f = finding(file="a.go", category="bug")
+    result = decide([f], [discussion_for(f)], ["a.go"])
+
+    assert result.folded == ()

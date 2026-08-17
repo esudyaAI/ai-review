@@ -16,6 +16,7 @@ class GateDecision:
     to_adjudicate: tuple[str, ...]
     kept_open: tuple[str, ...]
     suppressed: tuple[tuple[str, str], ...] = ()
+    folded: tuple[tuple[str, str], ...] = ()
 
     @property
     def blocking_count(self) -> int:
@@ -76,10 +77,17 @@ def decide(
     open_scopes = {(d.category, d.file) for d in ours if d.category is not None and d.file is not None}
     found_scopes = {(f.category, f.file) for f in findings}
 
-    to_create_all = [
-        f for fp, f in found_by_fp.items()
-        if fp not in known_fps and (f.category, f.file) not in open_scopes
-    ]
+    not_yet_known = [f for fp, f in found_by_fp.items() if fp not in known_fps]
+    to_create_all = [f for f in not_yet_known if (f.category, f.file) not in open_scopes]
+
+    # Scope matching cannot tell "the same finding, shifted" from "a different
+    # finding in the same file" - the fingerprint is all we have, and it moved.
+    # The second one is folded into the open thread rather than getting its own,
+    # so it has to be reported: a finding nobody ever sees is worse than a
+    # duplicate thread.
+    folded = tuple(sorted(
+        {(f.category, f.file) for f in not_yet_known if (f.category, f.file) in open_scopes}
+    ))
     to_create = tuple(f for f in to_create_all if (f.category, f.file) not in accepted_scopes)
     suppressed = tuple(sorted(
         {(f.category, f.file) for f in to_create_all if (f.category, f.file) in accepted_scopes}
@@ -112,4 +120,5 @@ def decide(
         to_adjudicate=tuple(to_adjudicate),
         kept_open=tuple(kept_open),
         suppressed=suppressed,
+        folded=folded,
     )

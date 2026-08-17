@@ -107,6 +107,10 @@ def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int, 
     # what a reviewer will actually see in the merge request.
     # A suppressed finding must never be silent: the whole point of the scope rule
     # is that it can hide a real, different problem in the same file.
+    for category, path in decision.folded:
+        print(f"AI review: находка [{category}] в {path} отнесена к уже открытому "
+              f"треду той же категории в этом файле, отдельный тред не заводится")
+
     for category, path in decision.suppressed:
         print(f"AI review: находка [{category}] в {path} подавлена — "
               f"по этой паре (категория, файл) аргумент автора уже принят")
