@@ -8,7 +8,7 @@ import sys
 from openai import BadRequestError, OpenAI
 
 from reviewer.llm.base import ProviderResponse, ToolCall
-from reviewer.llm.usage import UsageTracker
+from reviewer.llm.usage import REVIEW_PHASE, UsageTracker
 
 
 class OpenAIProvider:
@@ -19,10 +19,14 @@ class OpenAIProvider:
         model: str,
         timeout: float = 120.0,
         usage_tracker: UsageTracker | None = None,
+        phase: str = REVIEW_PHASE,
     ) -> None:
         self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout, max_retries=3)
         self._model = model
         self._usage_tracker = usage_tracker
+        # Which pass of the run this provider serves. Review and adjudication share
+        # one tracker; without this their tokens cannot be told apart afterwards.
+        self._phase = phase
 
     def complete(self, messages: list[dict], tools: list[dict]) -> ProviderResponse:
         # A plain-text answer has no meaning in our protocol: the model must always
@@ -57,6 +61,7 @@ class OpenAIProvider:
                 response.usage.prompt_tokens,
                 response.usage.completion_tokens,
                 cached,
+                phase=self._phase,
             )
 
         message = response.choices[0].message

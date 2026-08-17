@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from reviewer.llm.usage import ADJUDICATION_PHASE
 from reviewer.__main__ import (
     EXIT_CLEAN,
     EXIT_FINDINGS,
@@ -233,9 +234,11 @@ def test_high_risk_discussion_selects_the_stronger_model_for_adjudication():
     by the stronger model, not always the base config.model - otherwise a weaker model
     resolves a dispute over a finding the stronger model produced."""
     seen: list[str] = []
+    phases: list[str] = []
 
-    def make_provider(model):
+    def make_provider(model, phase="review"):
         seen.append(model)
+        phases.append(phase)
         return FakeAdjudicationProvider(ProviderResponse(
             tool_calls=(ToolCall(id="a1", name="adjudicate",
                                  arguments={"accepted": True, "reason": "ок"}),),
@@ -257,7 +260,9 @@ def test_high_risk_discussion_selects_the_stronger_model_for_adjudication():
     adjudicator = _adjudicator_for(config, make_provider)
     adjudicator(discussion)
     assert seen == ["strong"]
-
+    # The adjudication pass must announce itself as such, or its tokens land in the
+    # review bucket and the breakdown stops meaning anything.
+    assert phases == [ADJUDICATION_PHASE]
 
 def test_main_returns_technical_error_when_env_var_is_missing(tmp_path, monkeypatch):
     """A missing required env var (OPENAI_API_KEY etc.) must be classified as a technical

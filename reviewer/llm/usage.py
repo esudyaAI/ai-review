@@ -1,11 +1,23 @@
 """Token usage and cost accounting, shared across every OpenAIProvider instance
 within a single review run (the CLI creates one tracker in main() and passes it
 into every provider the run creates, so usage accumulates across the main review
-pass and any adjudication calls)."""
+pass and any adjudication calls).
+
+Usage is recorded twice over: by model, which is what cost is computed from, and
+by phase, which is what answers "where did the tokens go". The second view exists
+because the first one cannot: a single number per run cannot distinguish a diff
+that grew from a tool loop that read half the repository.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+REVIEW_PHASE = "review"
+ADJUDICATION_PHASE = "adjudication"
+
+# Phase names as they appear in the report line.
+PHASE_LABELS = {REVIEW_PHASE: "ревью", ADJUDICATION_PHASE: "адъюдикация"}
 
 
 @dataclass
@@ -18,17 +30,27 @@ class ModelUsage:
 class UsageTracker:
     def __init__(self) -> None:
         self._by_model: dict[str, ModelUsage] = {}
+        self._by_phase: dict[str, ModelUsage] = {}
 
     def record(
-        self, model: str, prompt_tokens: int, completion_tokens: int, cached_tokens: int = 0
+        self,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        cached_tokens: int = 0,
+        phase: str = REVIEW_PHASE,
     ) -> None:
-        usage = self._by_model.setdefault(model, ModelUsage())
-        usage.prompt_tokens += prompt_tokens
-        usage.completion_tokens += completion_tokens
-        usage.cached_tokens += cached_tokens
+        for bucket, key in ((self._by_model, model), (self._by_phase, phase)):
+            usage = bucket.setdefault(key, ModelUsage())
+            usage.prompt_tokens += prompt_tokens
+            usage.completion_tokens += completion_tokens
+            usage.cached_tokens += cached_tokens
 
     def by_model(self) -> dict[str, ModelUsage]:
         return dict(self._by_model)
+
+    def by_phase(self) -> dict[str, ModelUsage]:
+        return dict(self._by_phase)
 
 
 def cost_for(model: str, usage: ModelUsage, pricing: dict[str, dict[str, float]]) -> float | None:
@@ -50,8 +72,35 @@ def cost_for(model: str, usage: ModelUsage, pricing: dict[str, dict[str, float]]
     return cost / 1_000_000
 
 
+def breakdown_line(by_phase: dict[str, ModelUsage], loop_stats=None) -> str | None:
+    """One line naming where the input tokens went, or None when there is nothing
+    to split: with a single phase the number is already on the cost line, and
+    repeating it would only add noise."""
+    phases = {name: usage for name, usage in by_phase.items() if usage.prompt_tokens}
+    if len(phases) < 2:
+        return None
+
+    total = sum(usage.prompt_tokens for usage in phases.values())
+    parts = []
+    for name, usage in sorted(phases.items(), key=lambda item: -item[1].prompt_tokens):
+        share = round(100 * usage.prompt_tokens / total)
+        parts.append(f"{PHASE_LABELS.get(name, name)} {usage.prompt_tokens} ({share}%)")
+
+    line = "AI review: разбивка входа — " + ", ".join(parts)
+    if loop_stats is not None:
+        line += (
+            f"; итераций ревью {loop_stats.iterations}, "
+            f"вызовов инструментов {loop_stats.tool_calls}, "
+            f"прочитано {loop_stats.tool_result_bytes} байт"
+        )
+    return line
+
+
 def report_lines(
-    by_model: dict[str, ModelUsage], pricing: dict[str, dict[str, float]]
+    by_model: dict[str, ModelUsage],
+    pricing: dict[str, dict[str, float]],
+    by_phase: dict[str, ModelUsage] | None = None,
+    loop_stats=None,
 ) -> tuple[list[str], list[str]]:
     """Formats one report line per model for stdout, plus stderr warnings for any
     model with no usable price entry. Never raises - a missing price is reported,
@@ -76,4 +125,9 @@ def report_lines(
                 f"(из них кеш {usage.cached_tokens}), выход {usage.completion_tokens} токенов, "
                 f"стоимость ${cost:.4f}"
             )
+
+    if by_phase:
+        line = breakdown_line(by_phase, loop_stats)
+        if line is not None:
+            stdout_lines.append(line)
     return stdout_lines, stderr_warnings

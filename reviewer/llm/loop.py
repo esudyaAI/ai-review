@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 
 from reviewer.findings import (
     SUBMIT_FINDINGS_TOOL,
@@ -38,6 +39,19 @@ class ReviewIncomplete(Exception):
     """Raised when the model never produced a usable verdict."""
 
 
+@dataclass
+class LoopStats:
+    """What the run cost in shape, not in money.
+
+    Every iteration resends the whole conversation, so the result of a read_file
+    early on is paid for again by each call after it. Tokens alone cannot show
+    that; iterations and bytes read can."""
+
+    iterations: int = 0
+    tool_calls: int = 0
+    tool_result_bytes: int = 0
+
+
 class ReviewLoop:
     def __init__(
         self,
@@ -48,6 +62,7 @@ class ReviewLoop:
         self._provider = provider
         self._tools = tools
         self._max_iterations = max_iterations
+        self.stats = LoopStats()
 
     def run(self, system_prompt: str, user_prompt: str) -> list[Finding]:
         messages: list[dict] = [
@@ -61,6 +76,7 @@ class ReviewLoop:
         investigation_calls = 0
 
         for _ in range(self._max_iterations):
+            self.stats.iterations += 1
             response = self._provider.complete(messages, available)
             if not response.tool_calls:
                 if text_reminders >= MAX_TEXT_REMINDERS:
@@ -118,6 +134,8 @@ class ReviewLoop:
         raise ReviewIncomplete("model never called submit_findings")
 
     def _serve(self, call: ToolCall) -> str:
+        if call.name in INVESTIGATION_TOOL_NAMES:
+            self.stats.tool_calls += 1
         try:
             result = self._tools.dispatch(call.name, call.arguments) or "(empty result)"
             # read_file/grep/list_files can return arbitrary repository content - the
@@ -125,7 +143,10 @@ class ReviewLoop:
             # Wrap it as data, same as the diff and CLAUDE.md, so it's never mistaken
             # for an instruction. Our own error text below is not repository content,
             # so it's left unwrapped.
-            return f"<tool_result>\n{result}\n</tool_result>"
+            wrapped = f"<tool_result>\n{result}\n</tool_result>"
+            if call.name in INVESTIGATION_TOOL_NAMES:
+                self.stats.tool_result_bytes += len(wrapped.encode("utf-8"))
+            return wrapped
         except ToolError as exc:
             return f"Tool error: {exc}"
         except KeyError as exc:
