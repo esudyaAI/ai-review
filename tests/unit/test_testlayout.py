@@ -1,6 +1,11 @@
 from pathlib import Path
 
-from reviewer.testlayout import NON_CODE_SUFFIXES, describe_test_layout, detect_test_globs
+from reviewer.testlayout import (
+    NON_CODE_SUFFIXES,
+    can_hold_a_test,
+    describe_test_layout,
+    detect_test_globs,
+)
 
 
 def _touch(root: Path, *relative_paths: str) -> None:
@@ -53,3 +58,33 @@ def test_non_code_suffixes_cover_the_files_that_cannot_hold_a_test():
         assert suffix in NON_CODE_SUFFIXES
     for suffix in (".go", ".py", ".ts", ".js"):
         assert suffix not in NON_CODE_SUFFIXES
+
+
+# The gate drops `tests` findings on files this function rejects, so a mistake
+# here silently swallows real findings - the one thing the drop must never do.
+def test_can_hold_a_test_accepts_source_files():
+    for path in (
+        "internal/service/auth.go", "reviewer/gate.py", "src/app.tsx",
+        "src/util.ts", "web/main.js", "lib/thing.rb", "scripts/run.sh",
+    ):
+        assert can_hold_a_test(path) is True, path
+
+
+def test_can_hold_a_test_rejects_files_with_nothing_to_call():
+    for path in (
+        ".gitlab-ci.yml", "config.yaml", "package.json", "pyproject.toml",
+        "README.md", "docs/guide.rst", "data/rows.csv", "go.sum", "go.mod",
+        "poetry.lock", "migrations/001.sql", "assets/logo.svg", "assets/photo.png",
+    ):
+        assert can_hold_a_test(path) is False, path
+
+
+# Dockerfile, Makefile, LICENSE: build and packaging inputs, not units under test.
+def test_can_hold_a_test_rejects_files_without_a_suffix():
+    for path in ("Dockerfile", "Makefile", "LICENSE", "deploy/Dockerfile"):
+        assert can_hold_a_test(path) is False, path
+
+
+def test_can_hold_a_test_ignores_suffix_case():
+    assert can_hold_a_test("CONFIG.YML") is False
+    assert can_hold_a_test("Main.GO") is True
