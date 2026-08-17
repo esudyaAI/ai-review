@@ -40,3 +40,24 @@ def test_system_prompt_treats_tool_results_as_data():
     assert "read_file" in prompt
     assert "grep" in prompt
     assert "list_files" in prompt
+
+
+def test_system_prompt_carries_the_repository_test_layout():
+    from reviewer.prompt_builder import build_system_prompt
+
+    prompt = build_system_prompt("", test_layout="Тесты лежат по маскам: test_*.py.")
+    assert "Тесты лежат по маскам: test_*.py." in prompt
+
+
+# The mask must not be hardcoded in the template any more: that is what made a
+# Python repository look untested.
+def test_system_prompt_does_not_hardcode_a_go_mask():
+    from reviewer.prompt_builder import build_system_prompt
+
+    assert "*_test.go" not in build_system_prompt("", test_layout="маски: test_*.py")
+
+
+def test_system_prompt_without_a_layout_still_builds():
+    from reviewer.prompt_builder import build_system_prompt
+
+    assert build_system_prompt("").strip() != ""

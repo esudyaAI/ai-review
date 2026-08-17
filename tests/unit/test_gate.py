@@ -249,3 +249,41 @@ def test_exact_match_is_not_reported_as_folded():
     result = decide([f], [discussion_for(f)], ["a.go"])
 
     assert result.folded == ()
+
+
+# A .gitlab-ci.yml cannot hold a unit test: there is nothing in it to call. The
+# reviewer produced three such findings on one YAML file in !12, each one asking
+# for a test of GitLab's own configuration semantics. A category that cannot
+# apply must be dropped before it reaches the merge request - and said out loud,
+# because a silently dropped finding is how real ones get lost.
+def test_tests_findings_on_non_code_files_are_dropped():
+    yaml_finding = Finding(
+        category="tests", file=".gitlab-ci.yml", line_start=3, line_end=3,
+        title="Нет теста на workflow", problem="p", evidence="e",
+        suggested_fix="s", confidence="high",
+    )
+    result = decide([yaml_finding], [], [".gitlab-ci.yml"])
+
+    assert result.to_create == ()
+    assert result.blocking_count == 0
+    assert result.not_applicable == (("tests", ".gitlab-ci.yml"),)
+
+
+def test_other_categories_on_non_code_files_are_kept():
+    secret = Finding(
+        category="security", file=".gitlab-ci.yml", line_start=3, line_end=3,
+        title="Секрет в конфиге", problem="p", evidence="e",
+        suggested_fix="s", confidence="high",
+    )
+    result = decide([secret], [], [".gitlab-ci.yml"])
+
+    assert [f.title for f in result.to_create] == ["Секрет в конфиге"]
+    assert result.not_applicable == ()
+
+
+def test_tests_findings_on_code_files_are_kept():
+    real = finding(file="internal/service/auth.go", category="tests")
+    result = decide([real], [], ["internal/service/auth.go"])
+
+    assert [f.file for f in result.to_create] == ["internal/service/auth.go"]
+    assert result.not_applicable == ()
