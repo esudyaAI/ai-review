@@ -52,7 +52,12 @@ class Config:
 
 def load_config(path: Path) -> Config:
     if not path.exists():
-        return Config().validate()
+        # Without this the run dies on Config().validate() with "model must not be
+        # empty", which reads as a bad value rather than an absent file. That cost
+        # this very repository two weeks of a review job that failed at startup in
+        # two seconds under allow_failure, while the documentation said review was
+        # connected.
+        raise ConfigError(f".ai-review.yml not found at {path}")
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     limits_raw = raw.get("limits") or {}
     defaults = Limits()
