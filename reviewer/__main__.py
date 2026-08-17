@@ -26,7 +26,7 @@ from reviewer.llm.usage import (
     report_lines,
 )
 from reviewer.prompt_builder import build_system_prompt, build_user_prompt
-from reviewer.testlayout import describe_test_layout
+from reviewer.testlayout import describe_test_layout, detect_test_globs
 from reviewer.tools import RepoTools
 
 EXIT_CLEAN = 0
@@ -78,7 +78,7 @@ def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int, 
 
     try:
         discussions = client.list_discussions(mr_iid)
-        decision = decide(blocking, discussions, mr.changed_files)
+        decision = decide(blocking, discussions, mr.changed_files, detect_test_globs(repo))
     except Exception as exc:  # noqa: BLE001 - a GitLab failure here is technical, not a verdict
         print(f"AI review: техническая ошибка при работе с GitLab: {exc}", file=sys.stderr)
         return EXIT_TECHNICAL
@@ -125,6 +125,10 @@ def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int, 
     # what a reviewer will actually see in the merge request.
     # A suppressed finding must never be silent: the whole point of the scope rule
     # is that it can hide a real, different problem in the same file.
+    for category, path in decision.covered_by_new_tests:
+        print(f"AI review: находка [{category}] в {path} отброшена — этот merge "
+              f"request добавляет тесты в том же пакете, значит покрытие он не ухудшал")
+
     for category, path in decision.not_applicable:
         print(f"AI review: находка [{category}] в {path} отброшена — "
               f"в этом файле нечего вызывать, категория неприменима")

@@ -287,3 +287,68 @@ def test_tests_findings_on_code_files_are_kept():
 
     assert [f.file for f in result.to_create] == ["internal/service/auth.go"]
     assert result.not_applicable == ()
+
+
+# The `tests` category asked "is this function covered?" instead of "did this
+# merge request make coverage worse". On jobbytime-go !33 that produced seven
+# findings across seven rounds - one per touched file - including one about
+# ProcessSingleApplication whose tests were in the very same diff. A gap the
+# merge request did not create is not a finding about the merge request.
+def test_tests_finding_is_dropped_when_the_mr_adds_tests_in_that_package():
+    f = finding(file="internal/service/auto_apply_main.go", category="tests")
+
+    result = decide(
+        [f], [],
+        ["internal/service/auto_apply_main.go", "internal/service/auto_apply_service_test.go"],
+        test_globs=("*_test.go",),
+    )
+
+    assert result.to_create == ()
+    assert result.covered_by_new_tests == (("tests", "internal/service/auto_apply_main.go"),)
+
+
+def test_tests_finding_survives_when_the_mr_adds_no_tests_there():
+    f = finding(file="internal/service/auto_apply_main.go", category="tests")
+
+    result = decide([f], [], ["internal/service/auto_apply_main.go"], test_globs=("*_test.go",))
+
+    assert [x.file for x in result.to_create] == ["internal/service/auto_apply_main.go"]
+    assert result.covered_by_new_tests == ()
+
+
+# Tests added in a different package say nothing about this one.
+def test_tests_added_in_another_package_do_not_excuse_this_file():
+    f = finding(file="internal/service/auto_apply_main.go", category="tests")
+
+    result = decide(
+        [f], [],
+        ["internal/service/auto_apply_main.go", "internal/stats/pipeline_stats_test.go"],
+        test_globs=("*_test.go",),
+    )
+
+    assert [x.file for x in result.to_create] == ["internal/service/auto_apply_main.go"]
+
+
+# Only the `tests` category is excused - a bug is a bug whatever the diff adds.
+def test_other_categories_are_not_excused_by_new_tests():
+    f = finding(file="internal/service/auto_apply_main.go", category="bug")
+
+    result = decide(
+        [f], [],
+        ["internal/service/auto_apply_main.go", "internal/service/auto_apply_service_test.go"],
+        test_globs=("*_test.go",),
+    )
+
+    assert [x.file for x in result.to_create] == ["internal/service/auto_apply_main.go"]
+
+
+def test_without_known_test_globs_nothing_is_excused():
+    f = finding(file="internal/service/auto_apply_main.go", category="tests")
+
+    result = decide(
+        [f], [],
+        ["internal/service/auto_apply_main.go", "internal/service/auto_apply_service_test.go"],
+        test_globs=(),
+    )
+
+    assert [x.file for x in result.to_create] == ["internal/service/auto_apply_main.go"]

@@ -10,7 +10,9 @@ language".
 
 from __future__ import annotations
 
+from fnmatch import fnmatch
 from pathlib import Path
+from typing import Iterable
 
 # Mask -> the way it is recognised. Kept as a table rather than one regex so
 # adding an ecosystem is a line, and so the mask handed to the model is exactly
@@ -94,3 +96,13 @@ def can_hold_a_test(path: str) -> bool:
         # not units under test.
         return False
     return suffix not in NON_CODE_SUFFIXES
+
+
+def is_test_file(path: str, globs: Iterable[str]) -> bool:
+    """True if `path` matches one of the repository's own test masks.
+
+    Masks, not a hardcoded suffix: a Go mask in a Python repository is what
+    started this whole class of mistakes.
+    """
+    name = Path(path).name
+    return any(fnmatch(name, glob) for glob in globs)

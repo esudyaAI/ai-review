@@ -7,7 +7,7 @@ from typing import Sequence
 
 from reviewer.findings import Finding
 from reviewer.gitlab_client import Discussion
-from reviewer.testlayout import can_hold_a_test
+from reviewer.testlayout import can_hold_a_test, is_test_file
 
 
 @dataclass(frozen=True)
@@ -19,6 +19,7 @@ class GateDecision:
     suppressed: tuple[tuple[str, str], ...] = ()
     folded: tuple[tuple[str, str], ...] = ()
     not_applicable: tuple[tuple[str, str], ...] = ()
+    covered_by_new_tests: tuple[tuple[str, str], ...] = ()
 
     @property
     def blocking_count(self) -> int:
@@ -33,7 +34,29 @@ def decide(
     findings: Sequence[Finding],
     discussions: Sequence[Discussion],
     changed_files: Sequence[str],
+    test_globs: Sequence[str] = (),
 ) -> GateDecision:
+    # The `tests` category has to answer "did this merge request make coverage
+    # worse", not "is this function covered". Asked the second way it reports gaps
+    # the merge request did not create, and on jobbytime-go !33 that produced a
+    # finding per touched file across seven review rounds - one of them about a
+    # function whose tests were in the same diff.
+    #
+    # The deterministic half of the answer: if the author added or changed tests
+    # in the same package in this very merge request, a blanket "no coverage"
+    # claim about that package is not a finding about this merge request. The
+    # other half is a matter of judgement and lives in the prompt.
+    packages_with_new_tests = {
+        _package_of(path) for path in changed_files if is_test_file(path, test_globs)
+    }
+    covered_by_new_tests = tuple(sorted(
+        {(f.category, f.file) for f in findings
+         if f.category == "tests" and _package_of(f.file) in packages_with_new_tests}
+    ))
+    findings = [f for f in findings
+                if not (f.category == "tests"
+                        and _package_of(f.file) in packages_with_new_tests)]
+
     # A `tests` finding on a file with nothing to call asks for a unit test of
     # somebody else's configuration format. Three of them landed on one
     # .gitlab-ci.yml in !12. The category cannot apply, so the finding is dropped
@@ -136,4 +159,12 @@ def decide(
         suppressed=suppressed,
         folded=folded,
         not_applicable=not_applicable,
+        covered_by_new_tests=covered_by_new_tests,
     )
+
+
+def _package_of(path: str) -> str:
+    """Directory of a file - the unit a test file belongs to in every language
+    the reviewer sees. Go and Python put tests beside or under the package;
+    JavaScript puts them beside the module."""
+    return path.rsplit("/", 1)[0] if "/" in path else ""
