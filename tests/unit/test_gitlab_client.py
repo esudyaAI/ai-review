@@ -360,3 +360,55 @@ def test_api_error_raises(client):
     )
     with pytest.raises(httpx.HTTPStatusError):
         client.list_discussions(7)
+
+
+# Наблюдено на jobbytime-go MR !29. Когда автор закрывает тред и потом правит тот
+# же файл, GitLab дописывает в тред системную заметку «changed this line in
+# version N of the diff». Она не resolvable, её поле resolved равно None, и
+# прежняя проверка all(n.get("resolved", False)) объявляла закрытый тред
+# открытым — навсегда. Следующий прогон снова адъюдицировал его и снова блокировал
+# мердж, то есть правило двух кругов физически не могло сработать.
+@respx.mock
+def test_resolved_survives_unresolvable_system_note(client):
+    payload = [{
+        "id": "d1",
+        "notes": [
+            {"id": 1, "body": "**[tests] что-то**", "resolvable": True, "resolved": True},
+            {"id": 2, "body": "ответ автора", "resolvable": True, "resolved": True},
+            {"id": 3, "body": "changed this line in version 4 of the diff",
+             "resolvable": False, "resolved": None},
+        ],
+    }]
+    respx.get(f"{API}/projects/{PROJECT}/merge_requests/29/discussions?per_page=100").mock(
+        return_value=httpx.Response(200, json=payload))
+    assert client.list_discussions(29)[0].resolved is True
+
+
+@respx.mock
+def test_open_thread_with_system_note_stays_open(client):
+    payload = [{
+        "id": "d2",
+        "notes": [
+            {"id": 1, "body": "**[tests] что-то**", "resolvable": True, "resolved": False},
+            {"id": 2, "body": "changed this line in version 4 of the diff",
+             "resolvable": False, "resolved": None},
+        ],
+    }]
+    respx.get(f"{API}/projects/{PROJECT}/merge_requests/29/discussions?per_page=100").mock(
+        return_value=httpx.Response(200, json=payload))
+    assert client.list_discussions(29)[0].resolved is False
+
+
+# Тред без единой resolvable-заметки закрытым не считается: закрывать там нечего.
+@respx.mock
+def test_thread_of_only_system_notes_is_not_resolved(client):
+    payload = [{
+        "id": "d3",
+        "notes": [
+            {"id": 1, "body": "changed this line in version 4 of the diff",
+             "resolvable": False, "resolved": None},
+        ],
+    }]
+    respx.get(f"{API}/projects/{PROJECT}/merge_requests/29/discussions?per_page=100").mock(
+        return_value=httpx.Response(200, json=payload))
+    assert client.list_discussions(29)[0].resolved is False

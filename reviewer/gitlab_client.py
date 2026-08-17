@@ -135,8 +135,16 @@ class GitLabClient:
         raw = self._get_paginated(f"merge_requests/{mr_iid}/discussions", {"per_page": PAGE_SIZE})
         discussions = []
         for item in raw:
-            notes = tuple(Note(id=n["id"], body=n.get("body", "")) for n in item.get("notes", []))
-            resolved = all(n.get("resolved", False) for n in item.get("notes", [])) if notes else False
+            raw_notes = item.get("notes", [])
+            notes = tuple(Note(id=n["id"], body=n.get("body", "")) for n in raw_notes)
+            # Only resolvable notes carry a resolution state. GitLab appends
+            # unresolvable system notes ("changed this line in version N of the
+            # diff") whenever the file is edited after the thread was opened, and
+            # their `resolved` is null - counting them made every closed thread
+            # look open again on the next push, so a thread the author closed with
+            # an argument came back and blocked the merge forever.
+            resolvable = [n for n in raw_notes if n.get("resolvable", True)]
+            resolved = bool(resolvable) and all(n.get("resolved", False) for n in resolvable)
             discussions.append(Discussion(id=item["id"], notes=notes, resolved=resolved))
         return discussions
 
