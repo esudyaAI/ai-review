@@ -173,3 +173,20 @@ def test_phase_breakdown_and_loop_counters_are_separate_lines():
 
     assert len([line for line in stdout_lines if "разбивка" in line]) == 1
     assert len([line for line in stdout_lines if "итераций" in line]) == 1
+
+
+def test_loop_stats_are_summed_across_passes():
+    from reviewer.llm.loop import LoopStats
+    from reviewer.llm.usage import merge_loop_stats
+
+    merged = merge_loop_stats([
+        LoopStats(iterations=6, tool_calls=18, tool_result_bytes=1000),
+        LoopStats(iterations=9, tool_calls=23, tool_result_bytes=2500),
+    ])
+    assert (merged.iterations, merged.tool_calls, merged.tool_result_bytes) == (15, 41, 3500)
+
+
+def test_loop_stats_of_nothing_is_none():
+    from reviewer.llm.usage import merge_loop_stats
+
+    assert merge_loop_stats([]) is None

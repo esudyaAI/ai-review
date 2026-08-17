@@ -68,3 +68,47 @@ def test_missing_config_file_says_the_file_is_missing(tmp_path):
 
     assert str(missing) in str(exc.value)
     assert "not found" in str(exc.value)
+
+
+def _config(**overrides):
+    data = dict(
+        test_command="", provider="openai", base_url="https://api.openai.com/v1",
+        model="mini", model_high_risk="strong",
+        high_risk_paths=("internal/service/auth_*", "*stripe*"), limits=Limits(),
+    )
+    data.update(overrides)
+    return Config(**data)
+
+
+# One high-risk file used to pull the whole diff to the strong model, so a merge
+# request that touched auth_service.go plus eight unrelated files paid the strong
+# model's output price ($30/M against $4.50/M) for all nine. Splitting the files
+# lets each half be reviewed by the model its own risk deserves.
+def test_split_by_risk_separates_the_two_halves():
+    high, rest = _config().split_by_risk((
+        "internal/service/auth_service.go",
+        "internal/stats/pipeline_stats.go",
+        "internal/service/stripe_webhook.go",
+        "README.md",
+    ))
+    assert high == ("internal/service/auth_service.go", "internal/service/stripe_webhook.go")
+    assert rest == ("internal/stats/pipeline_stats.go", "README.md")
+
+
+def test_split_by_risk_keeps_order_and_handles_empty_sides():
+    assert _config().split_by_risk(("a.go", "b.go")) == ((), ("a.go", "b.go"))
+    assert _config().split_by_risk(("internal/service/auth_a.go",)) == (
+        ("internal/service/auth_a.go",), (),
+    )
+    assert _config().split_by_risk(()) == ((), ())
+
+
+# Without a separate strong model there is nothing to route to, and splitting
+# would only double the fixed cost of a review for no gain.
+def test_split_by_risk_is_a_no_op_without_a_distinct_strong_model():
+    assert _config(model_high_risk="").split_by_risk(("internal/service/auth_a.go", "b.go")) == (
+        (), ("internal/service/auth_a.go", "b.go"),
+    )
+    assert _config(model_high_risk="mini").split_by_risk(("internal/service/auth_a.go", "b.go")) == (
+        (), ("internal/service/auth_a.go", "b.go"),
+    )

@@ -18,7 +18,13 @@ from reviewer.gate import decide
 from reviewer.gitlab_client import GitLabClient
 from reviewer.llm.loop import ReviewIncomplete, ReviewLoop
 from reviewer.llm.openai_provider import OpenAIProvider
-from reviewer.llm.usage import ADJUDICATION_PHASE, REVIEW_PHASE, UsageTracker, report_lines
+from reviewer.llm.usage import (
+    ADJUDICATION_PHASE,
+    REVIEW_PHASE,
+    UsageTracker,
+    merge_loop_stats,
+    report_lines,
+)
 from reviewer.prompt_builder import build_system_prompt, build_user_prompt
 from reviewer.tools import RepoTools
 
@@ -42,13 +48,24 @@ def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int, 
     try:
         claude_md = (repo / "CLAUDE.md").read_text(encoding="utf-8") if (repo / "CLAUDE.md").exists() else ""
         findings = list(run_deterministic(repo, mr.changed_files))
-        # High-risk paths in the diff pull the whole review to the stronger model.
-        reviewer = make_reviewer(config.model_for(mr.changed_files))
-        # The caller wants the loop's counters even if the review below raises:
-        # a run that died after twenty tool calls is exactly the case worth seeing.
-        if on_loop is not None:
-            on_loop(reviewer)
-        findings.extend(reviewer.run(build_system_prompt(claude_md), build_user_prompt(mr)))
+        # Each half of the diff is reviewed by the model its own risk deserves.
+        # Routing per merge request instead of per file meant one auth file made
+        # the strong model read all nine files of jobbytime-go !29 at $30/M output.
+        high_risk_files, other_files = config.split_by_risk(mr.changed_files)
+        passes = [
+            (config.model_high_risk, high_risk_files),
+            (config.model, other_files),
+        ]
+        system_prompt = build_system_prompt(claude_md)
+        for model, files in passes:
+            if not files:
+                continue
+            reviewer = make_reviewer(model)
+            # The caller wants the loop's counters even if the review below raises:
+            # a run that died after twenty tool calls is exactly the case worth seeing.
+            if on_loop is not None:
+                on_loop(reviewer)
+            findings.extend(reviewer.run(system_prompt, build_user_prompt(mr.subset(files))))
     except ReviewIncomplete as exc:
         print(f"AI review: ревью не завершено ({exc}), нужен реран", file=sys.stderr)
         return EXIT_TECHNICAL
@@ -176,7 +193,7 @@ def main(argv: list[str] | None = None) -> int:
             usage_tracker.by_model(),
             config.pricing,
             by_phase=usage_tracker.by_phase(),
-            loop_stats=loops[0].stats if loops else None,
+            loop_stats=merge_loop_stats(loop.stats for loop in loops),
         )
         for line in stdout_lines:
             print(line)

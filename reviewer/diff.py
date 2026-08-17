@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Iterable
 
 from reviewer.config import Limits
 
@@ -36,6 +37,20 @@ class MergeRequestDiff:
     @property
     def changed_files(self) -> tuple[str, ...]:
         return tuple(f.new_path for f in self.files)
+
+    def subset(self, paths: Iterable[str]) -> "MergeRequestDiff":
+        """The same merge request narrowed to `paths`, shas untouched.
+
+        The shas have to survive: create_discussion positions a comment against
+        them, and a finding from a narrowed pass is posted on the same diff.
+        """
+        wanted = set(paths)
+        return MergeRequestDiff(
+            base_sha=self.base_sha,
+            head_sha=self.head_sha,
+            start_sha=self.start_sha,
+            files=tuple(f for f in self.files if f.new_path in wanted),
+        )
 
 
 def parse_new_lines(diff_text: str) -> tuple[int, ...]:
