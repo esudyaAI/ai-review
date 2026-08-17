@@ -54,3 +54,17 @@ def test_unsupported_provider_is_rejected():
             high_risk_paths=(),
             limits=Limits(),
         ).validate()
+
+
+def test_missing_config_file_says_the_file_is_missing(tmp_path):
+    """The reviewer's own repository had no .ai-review.yml for two weeks and nobody
+    noticed: the job died at startup with "model must not be empty", which reads as
+    a bad value rather than an absent file. Two seconds, exit 2, allow_failure -
+    invisible. The message has to name the real cause."""
+    missing = tmp_path / ".ai-review.yml"
+
+    with pytest.raises(ConfigError) as exc:
+        load_config(missing)
+
+    assert str(missing) in str(exc.value)
+    assert "not found" in str(exc.value)

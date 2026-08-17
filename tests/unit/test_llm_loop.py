@@ -312,3 +312,77 @@ def test_loop_reports_invalid_argument_type_to_the_model(tools):
 
     tool_messages = [m for m in provider.calls[-1] if m.get("role") == "tool"]
     assert "invalid argument" in tool_messages[0]["content"]
+
+
+# --- Review loop counters ----------------------------------------------------
+#
+# The conversation grows inside a single run: every iteration resends the whole
+# exchange, including the results of read_file and grep. So "how many tokens the
+# review took" explains nothing on its own - the iteration count and the volume
+# read do. Without these counters any statement about the cause of the growth
+# stays a guess.
+
+
+def test_loop_counts_iterations_tool_calls_and_bytes_read(tmp_path):
+    (tmp_path / "main.go").write_text("package main\n\nfunc main() {}\n", encoding="utf-8")
+    tools = RepoTools(root=tmp_path)
+
+    read = ProviderResponse(
+        tool_calls=(ToolCall(id="t1", name="read_file", arguments={"path": "main.go"}),),
+        text=None,
+    )
+    grep = ProviderResponse(
+        tool_calls=(ToolCall(id="t2", name="grep", arguments={"pattern": "func"}),),
+        text=None,
+    )
+    listing = ProviderResponse(
+        tool_calls=(ToolCall(id="t3", name="list_files", arguments={}),),
+        text=None,
+    )
+    provider = ScriptedProvider([read, grep, listing, submit_call([])])
+    loop = ReviewLoop(provider, tools)
+
+    loop.run("system", "user")
+
+    assert loop.stats.iterations == 4
+    assert loop.stats.tool_calls == 3
+    # Whatever the tools returned is paid for again as prompt tokens on every
+    # later iteration; the byte count is what makes that visible.
+    assert loop.stats.tool_result_bytes > len("package main")
+
+
+def test_loop_stats_start_at_zero_before_a_run(tmp_path):
+    loop = ReviewLoop(ScriptedProvider([submit_call([])]), RepoTools(root=tmp_path))
+
+    assert (loop.stats.iterations, loop.stats.tool_calls, loop.stats.tool_result_bytes) == (0, 0, 0)
+
+
+class ExplodingProvider:
+    """Answers once, then fails - a transient API error mid-run."""
+
+    def __init__(self, first):
+        self._first = first
+        self.calls = 0
+
+    def complete(self, messages, tools):
+        self.calls += 1
+        if self.calls == 1:
+            return self._first
+        raise RuntimeError("provider is down")
+
+
+def test_iteration_is_counted_only_after_the_model_answered(tmp_path):
+    """A counter that ticks before the call reports round trips that never happened.
+    For a number whose whole job is to explain where the tokens went, an inflated
+    count is worse than no count. Found by review on !8."""
+    (tmp_path / "main.go").write_text("package main\n", encoding="utf-8")
+    read = ProviderResponse(
+        tool_calls=(ToolCall(id="t1", name="read_file", arguments={"path": "main.go"}),),
+        text=None,
+    )
+    loop = ReviewLoop(ExplodingProvider(read), RepoTools(root=tmp_path))
+
+    with pytest.raises(RuntimeError):
+        loop.run("system", "user")
+
+    assert loop.stats.iterations == 1

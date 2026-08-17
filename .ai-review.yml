@@ -1,0 +1,38 @@
+# Reviewer configuration for its own repository.
+#
+# There was no such file here until 2026-08-17, and the ai-review job died at
+# startup with "model must not be empty" on every merge request: two seconds,
+# exit 2, allow_failure. Review of this repository was recorded as connected and
+# had never run once - the first such job dates back to 2026-08-02, !7.
+test_command: python -m pytest -q
+provider: openai
+base_url: https://api.openai.com/v1
+model: gpt-5.4-mini-2026-03-17
+model_high_risk: gpt-5.5-2026-04-23
+
+# Kept deliberately narrow. The stronger model costs roughly seven times more per
+# run ($0.55 against $0.08 measured on this merge request), so a path belongs here
+# only when a mistake in it is expensive and hard to see in tests:
+#   prompts  - change the behaviour of every review in every repository at once;
+#   gate.py  - decides what blocks a merge;
+#   tools.py - the only place the model reaches repository content, so it is the
+#              prompt-injection surface.
+# Money accounting (usage.py) and config parsing are covered by unit tests and
+# fail loudly, so they stay on the base model.
+high_risk_paths:
+  - reviewer/prompts/*
+  - reviewer/gate.py
+  - reviewer/tools.py
+
+limits:
+  max_files: 60
+  max_changed_lines: 3000
+
+pricing:
+  gpt-5.4-mini-2026-03-17:
+    input: 0.75
+    output: 4.50
+  gpt-5.5-2026-04-23:
+    input: 5.00
+    output: 30.00
+    cached_input: 0.50

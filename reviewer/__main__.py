@@ -18,7 +18,7 @@ from reviewer.gate import decide
 from reviewer.gitlab_client import GitLabClient
 from reviewer.llm.loop import ReviewIncomplete, ReviewLoop
 from reviewer.llm.openai_provider import OpenAIProvider
-from reviewer.llm.usage import UsageTracker, report_lines
+from reviewer.llm.usage import ADJUDICATION_PHASE, REVIEW_PHASE, UsageTracker, report_lines
 from reviewer.prompt_builder import build_system_prompt, build_user_prompt
 from reviewer.tools import RepoTools
 
@@ -28,7 +28,7 @@ EXIT_TECHNICAL = 2
 EXIT_TOO_LARGE = 3
 
 
-def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int) -> int:
+def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int, on_loop=None) -> int:
     try:
         mr = client.fetch_diff(mr_iid)
         check_limits(mr, config.limits)
@@ -44,6 +44,10 @@ def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int) 
         findings = list(run_deterministic(repo, mr.changed_files))
         # High-risk paths in the diff pull the whole review to the stronger model.
         reviewer = make_reviewer(config.model_for(mr.changed_files))
+        # The caller wants the loop's counters even if the review below raises:
+        # a run that died after twenty tool calls is exactly the case worth seeing.
+        if on_loop is not None:
+            on_loop(reviewer)
         findings.extend(reviewer.run(build_system_prompt(claude_md), build_user_prompt(mr)))
     except ReviewIncomplete as exc:
         print(f"AI review: ревью не завершено ({exc}), нужен реран", file=sys.stderr)
@@ -115,7 +119,7 @@ def _adjudicator_for(config, make_provider):
 
     def adjudicate_discussion(discussion):
         model = config.model_for([discussion.file] if discussion.file else [])
-        return adjudicate(make_provider(model), discussion)
+        return adjudicate(make_provider(model, ADJUDICATION_PHASE), discussion)
 
     return adjudicate_discussion
 
@@ -132,9 +136,13 @@ def main(argv: list[str] | None = None) -> int:
         api_key = os.environ["OPENAI_API_KEY"]
         usage_tracker = UsageTracker()
 
-        def make_provider(model: str) -> OpenAIProvider:
+        def make_provider(model: str, phase: str = REVIEW_PHASE) -> OpenAIProvider:
             return OpenAIProvider(
-                api_key=api_key, base_url=config.base_url, model=model, usage_tracker=usage_tracker
+                api_key=api_key,
+                base_url=config.base_url,
+                model=model,
+                usage_tracker=usage_tracker,
+                phase=phase,
             )
 
         client = GitLabClient(
@@ -144,6 +152,7 @@ def main(argv: list[str] | None = None) -> int:
             client=httpx.Client(timeout=60.0),
         )
         tools = RepoTools(root=repo)
+        loops: list[ReviewLoop] = []
         code = review(
             config,
             repo,
@@ -151,8 +160,14 @@ def main(argv: list[str] | None = None) -> int:
             lambda model: ReviewLoop(make_provider(model), tools),
             _adjudicator_for(config, make_provider),
             args.mr,
+            on_loop=loops.append,
         )
-        stdout_lines, stderr_warnings = report_lines(usage_tracker.by_model(), config.pricing)
+        stdout_lines, stderr_warnings = report_lines(
+            usage_tracker.by_model(),
+            config.pricing,
+            by_phase=usage_tracker.by_phase(),
+            loop_stats=loops[0].stats if loops else None,
+        )
         for line in stdout_lines:
             print(line)
         for warning in stderr_warnings:
