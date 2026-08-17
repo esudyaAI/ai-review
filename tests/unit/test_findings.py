@@ -156,8 +156,8 @@ def test_parse_findings_rejects_non_string_fields(field, invalid_value):
         parse_findings(payload)
 
 
-# Треды, заведённые до появления cat= в маркере, обязаны разбираться и дальше:
-# иначе после выката новой версии вся прежняя история отпечатков станет чужой.
+# Threads created before cat= appeared in the marker must still parse: otherwise
+# the whole fingerprint history goes foreign the moment a new version ships.
 def test_marker_without_category_is_still_parsed():
     legacy = "<!-- ai-review:fp=0123456789abcdef;file=internal/service/a.go -->"
     assert extract_marker(legacy) == ("0123456789abcdef", "internal/service/a.go", None)

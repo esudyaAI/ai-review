@@ -119,17 +119,18 @@ def _at_line(f: Finding, line: int) -> Finding:
     )
 
 
-# Наблюдено на MR !29 в jobbytime-go: замечание про тест Redis-репозитория было
-# закрыто автором с обоснованием, следующий прогон нашёл его снова и завёл новый
-# тред. Отпечаток считается от окна строк (line_start // 10), а пуш сдвинул файл,
-# поэтому «принятый аргумент» перестал узнаваться. Правило двух кругов при этом
-# не разрывает цикл: каждый прогон — новый отпечаток.
+# Seen on jobbytime-go MR !29: the author closed a finding about an untested
+# Redis repository method with an argument, and the next run found it again and
+# opened a second thread. The fingerprint is built from a line window
+# (line_start // 10) and the push shifted the file, so the accepted argument
+# stopped being recognised. The two-rounds rule cannot break that loop - every
+# run is formally a new finding.
 def test_accepted_argument_survives_line_shift():
     original = finding(file="internal/repository/redis/redis_repository.go", category="tests")
     closed = discussion_for(original, resolved=True, human_reply=True)
 
     shifted = _at_line(original, 89)
-    assert shifted.fingerprint != original.fingerprint, "иначе тест ничего не проверяет"
+    assert shifted.fingerprint != original.fingerprint, "otherwise the test asserts nothing"
 
     result = decide([shifted], [closed], ["internal/repository/redis/redis_repository.go"])
     assert result.to_create == ()
@@ -154,8 +155,8 @@ def test_accepted_argument_does_not_suppress_other_files():
     assert [f.file for f in result.to_create] == ["b.go"]
 
 
-# Тред, закрытый самим ревьюером, потому что находка перестала воспроизводиться,
-# решения человека не несёт: вернувшаяся регрессия должна блокировать снова.
+# A thread the reviewer closed itself, because the finding stopped reproducing,
+# carries no human decision: a regression that brings it back must block again.
 def test_auto_resolved_thread_does_not_suppress_after_shift():
     original = finding(file="a.go", category="tests")
     auto_closed = discussion_for(original, resolved=True, human_reply=False)
@@ -163,3 +164,59 @@ def test_auto_resolved_thread_does_not_suppress_after_shift():
     shifted = _at_line(original, 89)
     result = decide([shifted], [auto_closed], ["a.go"])
     assert [f.file for f in result.to_create] == ["a.go"]
+
+
+# An argument the reviewer REJECTED is not an accepted argument. Suppressing by
+# (category, file) on any disputed thread made a rejected finding vanish: the
+# shifted fingerprint was suppressed, and the old open thread was auto-resolved
+# because its own fingerprint no longer reproduced in a changed file. Net effect
+# - a finding the reviewer stood behind stopped blocking the merge.
+def test_rejected_dispute_does_not_suppress_the_finding():
+    original = finding(file="a.go", category="tests")
+    rejected = Discussion(
+        id="d-rejected",
+        notes=(
+            Note(id=1, body=render_comment(original)),
+            Note(id=2, body="это не проблема"),
+            Note(id=3, body="Замечание остаётся: аргумент не по существу <!-- ai-review:bot -->"),
+        ),
+        resolved=False,
+    )
+
+    shifted = _at_line(original, 89)
+    result = decide([shifted], [rejected], ["a.go"])
+
+    # The drifted finding belongs to the thread that is already arguing about it:
+    # no new thread, the old one stays open and keeps blocking, and the argument
+    # history stays in one place.
+    assert result.to_create == ()
+    assert result.suppressed == ()
+    assert rejected.id in result.kept_open
+    assert rejected.id not in result.to_resolve
+    assert result.blocking_count >= 1
+
+
+# The same drift must not spawn a duplicate next to a thread nobody has replied
+# to yet: before the scope match, a shifted fingerprint minted a second thread
+# about the same defect on every push.
+def test_drifted_finding_reuses_the_open_thread():
+    original = finding(file="a.go", category="tests")
+    open_thread = discussion_for(original)
+
+    shifted = _at_line(original, 89)
+    result = decide([shifted], [open_thread], ["a.go"])
+
+    assert result.to_create == ()
+    assert open_thread.id in result.kept_open
+    assert result.to_resolve == ()
+
+
+# A finding that really is gone still gets its thread closed - the scope match
+# must not turn auto-resolution off.
+def test_thread_is_still_resolved_when_nothing_reproduces():
+    original = finding(file="a.go", category="tests")
+    open_thread = discussion_for(original)
+
+    result = decide([], [open_thread], ["a.go"])
+
+    assert open_thread.id in result.to_resolve

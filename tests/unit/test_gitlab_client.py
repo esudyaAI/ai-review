@@ -362,12 +362,12 @@ def test_api_error_raises(client):
         client.list_discussions(7)
 
 
-# Наблюдено на jobbytime-go MR !29. Когда автор закрывает тред и потом правит тот
-# же файл, GitLab дописывает в тред системную заметку «changed this line in
-# version N of the diff». Она не resolvable, её поле resolved равно None, и
-# прежняя проверка all(n.get("resolved", False)) объявляла закрытый тред
-# открытым — навсегда. Следующий прогон снова адъюдицировал его и снова блокировал
-# мердж, то есть правило двух кругов физически не могло сработать.
+# Seen on jobbytime-go MR !29. When the author closes a thread and then edits the
+# same file, GitLab appends a system note ("changed this line in version N of the
+# diff"). It is not resolvable and its `resolved` is null, so the old
+# all(n.get("resolved", False)) check declared a closed thread open - forever, as
+# the note never goes away. Every later run re-adjudicated it and kept blocking
+# the merge, which made the two-rounds rule impossible to apply.
 @respx.mock
 def test_resolved_survives_unresolvable_system_note(client):
     payload = [{
@@ -399,7 +399,7 @@ def test_open_thread_with_system_note_stays_open(client):
     assert client.list_discussions(29)[0].resolved is False
 
 
-# Тред без единой resolvable-заметки закрытым не считается: закрывать там нечего.
+# A thread with no resolvable note at all is not closed: there is nothing to close.
 @respx.mock
 def test_thread_of_only_system_notes_is_not_resolved(client):
     payload = [{
