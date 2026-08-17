@@ -138,19 +138,30 @@ def decide(
     to_adjudicate: list[str] = []
 
     for fp, discussion in open_by_fp.items():
-        # Human reply takes priority: always adjudicate, regardless of whether finding reproduces.
-        if discussion.has_human_reply:
-            to_adjudicate.append(discussion.id)
+        # Exact fingerprint, or the same (category, file) under a fingerprint the
+        # line drift moved - both mean the finding still reproduces.
+        reproduces = fp in found_by_fp or (discussion.category, discussion.file) in found_scopes
+
+        # Adjudication is for arguments, and only a reproducing finding can be
+        # argued about. Sending a fixed one there is what made every merge request
+        # drag: the author writes "confirmed, fixed in commit abc", the adjudicator
+        # answers "this does not refute the finding" - true, useless - and the
+        # thread stays open forever. A finding that stopped reproducing in a file
+        # this merge request changed is fixed, and that is not a judgement call.
+        if reproduces:
+            if discussion.has_human_reply:
+                to_adjudicate.append(discussion.id)
             kept_open.append(discussion.id)
             continue
 
-        # Exact fingerprint, or the same (category, file) under a fingerprint the
-        # line drift moved - both mean the finding still reproduces.
-        if fp in found_by_fp or (discussion.category, discussion.file) in found_scopes:
-            kept_open.append(discussion.id)
-            continue
         if discussion.file in changed:
+            # Gone from a file this merge request changed: fixed.
             to_resolve.append(discussion.id)
+        elif discussion.has_human_reply:
+            # Gone from a file nobody touched. That is not a fix, it is the model
+            # being non-deterministic, so a human argument still deserves a verdict.
+            to_adjudicate.append(discussion.id)
+            kept_open.append(discussion.id)
         else:
             # The model is not deterministic; a silently vanished finding is not proof of a fix.
             kept_open.append(discussion.id)

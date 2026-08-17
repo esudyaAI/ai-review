@@ -95,12 +95,22 @@ def test_clean_review_returns_zero():
     assert decide([], [], ["a.go"]).exit_code == 0
 
 
-def test_human_reply_with_disappeared_finding_in_changed_file_goes_to_adjudication_not_resolve():
+# Retracted 2026-08-17. This used to assert the opposite: a disappeared finding
+# with a human reply went to adjudication and was kept open even when its file had
+# been changed. The intent was sound - a disappearance is not proof of a fix - but
+# in practice it meant an author who fixed a finding and said so could never close
+# the thread, because the adjudicator judges arguments and "fixed in commit abc"
+# refutes nothing. That is what dragged every merge request on 2026-08-17.
+#
+# The distinction that keeps the original intent is the file: gone from a file
+# this merge request changed is a fix; gone from a file nobody touched is not,
+# and that case still goes to adjudication (the test below).
+def test_disappeared_finding_in_a_changed_file_is_resolved_not_adjudicated():
     f = finding()
     result = decide([], [discussion_for(f, human_reply=True)], ["a.go"])
-    assert result.to_adjudicate == (f"d-{f.fingerprint}",)
-    assert result.to_resolve == ()
-    assert result.kept_open == (f"d-{f.fingerprint}",)
+    assert result.to_resolve == (f"d-{f.fingerprint}",)
+    assert result.to_adjudicate == ()
+    assert result.kept_open == ()
 
 
 def test_human_reply_with_disappeared_finding_in_untouched_file_goes_to_adjudication():
@@ -379,3 +389,45 @@ def test_without_known_test_globs_nothing_is_excused():
     )
 
     assert [x.file for x in result.to_create] == ["internal/service/auto_apply_main.go"]
+
+
+# The loop that made every merge request today drag on: a thread with a human
+# reply went to adjudication and was kept open no matter what, even when the
+# finding had stopped reproducing because the author fixed it. The adjudicator
+# only understands arguments - asked to judge "confirmed, fixed in commit abc" it
+# answers "this does not refute the finding", which is true and useless.
+#
+# A finding that no longer reproduces in a file this merge request changed is
+# fixed. That is not a matter of judgement and must not be sent to one.
+def test_fixed_finding_is_resolved_even_after_the_author_replied():
+    f = finding(file="a.go")
+    fixed = discussion_for(f, human_reply=True)
+
+    result = decide([], [fixed], ["a.go"])
+
+    assert fixed.id in result.to_resolve
+    assert fixed.id not in result.to_adjudicate
+    assert result.blocking_count == 0
+
+
+# Still reproducing plus a human argument is exactly what adjudication is for.
+def test_reproducing_finding_with_a_reply_is_still_adjudicated():
+    f = finding(file="a.go")
+    disputed = discussion_for(f, human_reply=True)
+
+    result = decide([f], [disputed], ["a.go"])
+
+    assert disputed.id in result.to_adjudicate
+    assert disputed.id in result.kept_open
+
+
+# A finding that vanished from a file nobody touched proves nothing: the model is
+# not deterministic, and silence is not a fix.
+def test_vanished_finding_in_an_untouched_file_stays_open():
+    f = finding(file="a.go")
+    quiet = discussion_for(f, human_reply=True)
+
+    result = decide([], [quiet], ["other.go"])
+
+    assert quiet.id in result.kept_open
+    assert quiet.id not in result.to_resolve
