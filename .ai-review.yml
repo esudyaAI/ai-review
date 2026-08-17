@@ -1,27 +1,28 @@
-# Конфигурация ревьюера для его собственного репозитория.
+# Reviewer configuration for its own repository.
 #
-# До 2026-08-17 этого файла здесь не было, и джоба ai-review на каждом MR
-# падала на старте с "model must not be empty" — две секунды, exit 2,
-# allow_failure: true. То есть ревью самого себя было записано как
-# подключённое, а не работало ни разу: первый такой прогон датируется
-# 2026-08-02, MR !7.
+# There was no such file here until 2026-08-17, and the ai-review job died at
+# startup with "model must not be empty" on every merge request: two seconds,
+# exit 2, allow_failure. Review of this repository was recorded as connected and
+# had never run once - the first such job dates back to 2026-08-02, !7.
 test_command: python -m pytest -q
 provider: openai
 base_url: https://api.openai.com/v1
 model: gpt-5.4-mini-2026-03-17
 model_high_risk: gpt-5.5-2026-04-23
 
-# Что здесь дорого сломать. Промпты и гейт определяют поведение ревью во всех
-# репозиториях группы разом; tools.py — единственное место, где модель получает
-# доступ к содержимому репозитория, то есть главная поверхность prompt injection;
-# usage.py считает деньги.
+# Kept deliberately narrow. The stronger model costs roughly seven times more per
+# run ($0.55 against $0.08 measured on this merge request), so a path belongs here
+# only when a mistake in it is expensive and hard to see in tests:
+#   prompts  - change the behaviour of every review in every repository at once;
+#   gate.py  - decides what blocks a merge;
+#   tools.py - the only place the model reaches repository content, so it is the
+#              prompt-injection surface.
+# Money accounting (usage.py) and config parsing are covered by unit tests and
+# fail loudly, so they stay on the base model.
 high_risk_paths:
   - reviewer/prompts/*
   - reviewer/gate.py
-  - reviewer/findings.py
   - reviewer/tools.py
-  - reviewer/llm/usage.py
-  - reviewer/config.py
 
 limits:
   max_files: 60

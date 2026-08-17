@@ -65,15 +65,15 @@ def test_report_lines_warns_and_omits_cost_for_unpriced_model():
     assert "some-unpriced-model" in stderr_warnings[0]
 
 
-# --- Разбивка расхода по фазам прогона -------------------------------------
+# --- Usage breakdown by phase ------------------------------------------------
 #
-# За четыре круга на одном merge request'е вход вырос с 23 157 до 159 131
-# токена (замер 2026-08-16, MR !27 в jobbytime-go). Причина не была установлена:
-# кандидатов три - рост самого диффа, накопление результатов инструментов в
-# диалоге и тексты тредов при адъюдикации, - и вклад каждого неизвестен.
+# Over four rounds on one merge request the input grew from 23,157 to 159,131
+# tokens (measured 2026-08-16, jobbytime-go !27). The cause was never
+# established: three candidates - a growing diff, tool results accumulating in
+# the conversation, and thread text during adjudication - and a single number
+# per run cannot tell them apart.
 #
-# Одна общая цифра на прогон ответа не даёт. Эти тесты закрепляют разбивку,
-# из которой видно, куда именно ушли токены.
+# These tests pin down the breakdown that can.
 
 
 def test_tracker_splits_usage_by_phase():
@@ -129,3 +129,47 @@ def test_breakdown_is_omitted_when_there_is_nothing_to_split():
     )
 
     assert not [line for line in stdout_lines if "разбивка" in line]
+
+
+class FakeLoopStats:
+    iterations = 7
+    tool_calls = 12
+    tool_result_bytes = 48000
+
+
+def test_loop_counters_are_reported_even_without_a_phase_split():
+    """A run with no disputed threads has a single phase, and that is the common
+    case - yet it is exactly the run whose iteration count and bytes read explain
+    where the tokens went. Tying the counters to the phase breakdown hid them from
+    every ordinary review. Found by review on !8."""
+    tracker = UsageTracker()
+    tracker.record("m", prompt_tokens=9000, completion_tokens=100, phase="review")
+
+    stdout_lines, _ = report_lines(
+        tracker.by_model(),
+        {"m": {"input": 1.0, "output": 1.0}},
+        by_phase=tracker.by_phase(),
+        loop_stats=FakeLoopStats(),
+    )
+
+    loop_line = [line for line in stdout_lines if "итераций" in line]
+    assert len(loop_line) == 1
+    assert "итераций ревью 7" in loop_line[0]
+    assert "вызовов инструментов 12" in loop_line[0]
+    assert "48000" in loop_line[0]
+
+
+def test_phase_breakdown_and_loop_counters_are_separate_lines():
+    tracker = UsageTracker()
+    tracker.record("m", prompt_tokens=9000, completion_tokens=100, phase="review")
+    tracker.record("m", prompt_tokens=1000, completion_tokens=50, phase="adjudication")
+
+    stdout_lines, _ = report_lines(
+        tracker.by_model(),
+        {"m": {"input": 1.0, "output": 1.0}},
+        by_phase=tracker.by_phase(),
+        loop_stats=FakeLoopStats(),
+    )
+
+    assert len([line for line in stdout_lines if "разбивка" in line]) == 1
+    assert len([line for line in stdout_lines if "итераций" in line]) == 1

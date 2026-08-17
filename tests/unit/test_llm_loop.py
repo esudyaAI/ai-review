@@ -314,13 +314,13 @@ def test_loop_reports_invalid_argument_type_to_the_model(tools):
     assert "invalid argument" in tool_messages[0]["content"]
 
 
-# --- Счётчики цикла ревью ---------------------------------------------------
+# --- Review loop counters ----------------------------------------------------
 #
-# Диалог с моделью растёт внутри одного прогона: каждая итерация отправляет всю
-# предыдущую переписку заново, включая результаты read_file и grep. Поэтому
-# «сколько токенов ушло на ревью» само по себе ничего не объясняет — объясняют
-# число итераций и объём прочитанного. Без этих счётчиков вывод о причине роста
-# расхода остаётся догадкой.
+# The conversation grows inside a single run: every iteration resends the whole
+# exchange, including the results of read_file and grep. So "how many tokens the
+# review took" explains nothing on its own - the iteration count and the volume
+# read do. Without these counters any statement about the cause of the growth
+# stays a guess.
 
 
 def test_loop_counts_iterations_tool_calls_and_bytes_read(tmp_path):
@@ -346,7 +346,7 @@ def test_loop_counts_iterations_tool_calls_and_bytes_read(tmp_path):
 
     assert loop.stats.iterations == 4
     assert loop.stats.tool_calls == 3
-    # Whatever the tools returned had to be paid for as prompt tokens on every
+    # Whatever the tools returned is paid for again as prompt tokens on every
     # later iteration; the byte count is what makes that visible.
     assert loop.stats.tool_result_bytes > len("package main")
 
