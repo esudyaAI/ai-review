@@ -1,0 +1,37 @@
+# Конфигурация ревьюера для его собственного репозитория.
+#
+# До 2026-08-17 этого файла здесь не было, и джоба ai-review на каждом MR
+# падала на старте с "model must not be empty" — две секунды, exit 2,
+# allow_failure: true. То есть ревью самого себя было записано как
+# подключённое, а не работало ни разу: первый такой прогон датируется
+# 2026-08-02, MR !7.
+test_command: python -m pytest -q
+provider: openai
+base_url: https://api.openai.com/v1
+model: gpt-5.4-mini-2026-03-17
+model_high_risk: gpt-5.5-2026-04-23
+
+# Что здесь дорого сломать. Промпты и гейт определяют поведение ревью во всех
+# репозиториях группы разом; tools.py — единственное место, где модель получает
+# доступ к содержимому репозитория, то есть главная поверхность prompt injection;
+# usage.py считает деньги.
+high_risk_paths:
+  - reviewer/prompts/*
+  - reviewer/gate.py
+  - reviewer/findings.py
+  - reviewer/tools.py
+  - reviewer/llm/usage.py
+  - reviewer/config.py
+
+limits:
+  max_files: 60
+  max_changed_lines: 3000
+
+pricing:
+  gpt-5.4-mini-2026-03-17:
+    input: 0.75
+    output: 4.50
+  gpt-5.5-2026-04-23:
+    input: 5.00
+    output: 30.00
+    cached_input: 0.50
