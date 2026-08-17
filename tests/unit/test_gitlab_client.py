@@ -360,3 +360,104 @@ def test_api_error_raises(client):
     )
     with pytest.raises(httpx.HTTPStatusError):
         client.list_discussions(7)
+
+
+# Seen on jobbytime-go MR !29. When the author closes a thread and then edits the
+# same file, GitLab appends a system note ("changed this line in version N of the
+# diff"). It is not resolvable and its `resolved` is null, so the old
+# all(n.get("resolved", False)) check declared a closed thread open - forever, as
+# the note never goes away. Every later run re-adjudicated it and kept blocking
+# the merge, which made the two-rounds rule impossible to apply.
+@respx.mock
+def test_resolved_survives_unresolvable_system_note(client):
+    payload = [{
+        "id": "d1",
+        "notes": [
+            {"id": 1, "body": "**[tests] что-то**", "resolvable": True, "resolved": True},
+            {"id": 2, "body": "ответ автора", "resolvable": True, "resolved": True},
+            {"id": 3, "body": "changed this line in version 4 of the diff",
+             "resolvable": False, "resolved": None},
+        ],
+    }]
+    respx.get(f"{API}/projects/{PROJECT}/merge_requests/29/discussions?per_page=100").mock(
+        return_value=httpx.Response(200, json=payload))
+    assert client.list_discussions(29)[0].resolved is True
+
+
+@respx.mock
+def test_open_thread_with_system_note_stays_open(client):
+    payload = [{
+        "id": "d2",
+        "notes": [
+            {"id": 1, "body": "**[tests] что-то**", "resolvable": True, "resolved": False},
+            {"id": 2, "body": "changed this line in version 4 of the diff",
+             "resolvable": False, "resolved": None},
+        ],
+    }]
+    respx.get(f"{API}/projects/{PROJECT}/merge_requests/29/discussions?per_page=100").mock(
+        return_value=httpx.Response(200, json=payload))
+    assert client.list_discussions(29)[0].resolved is False
+
+
+# A thread with no resolvable note at all is not closed: there is nothing to close.
+@respx.mock
+def test_thread_of_only_system_notes_is_not_resolved(client):
+    payload = [{
+        "id": "d3",
+        "notes": [
+            {"id": 1, "body": "changed this line in version 4 of the diff",
+             "resolvable": False, "resolved": None},
+        ],
+    }]
+    respx.get(f"{API}/projects/{PROJECT}/merge_requests/29/discussions?per_page=100").mock(
+        return_value=httpx.Response(200, json=payload))
+    assert client.list_discussions(29)[0].resolved is False
+
+
+# The root of the loop seen on both jobbytime-go !29 and this repository's !10.
+# GitLab appends a system note ("changed this line in version N of the diff") to
+# every thread whose file is touched afterwards. is_bot_note() said False for it,
+# so has_human_reply said True, so the thread went to adjudication on every run -
+# and the adjudicator was handed a system note as "the author's argument", found
+# no facts in it, and rejected it. Every finding therefore stayed open forever,
+# no matter what the author wrote or fixed. System notes are not part of the
+# conversation and must not reach the model at all.
+@respx.mock
+def test_system_notes_are_not_conversation(client):
+    payload = [{
+        "id": "d1",
+        "notes": [
+            {"id": 1, "body": "**[rules] что-то**", "system": False,
+             "resolvable": True, "resolved": False},
+            {"id": 2, "body": "changed this line in version 3 of the diff",
+             "system": True, "resolvable": False, "resolved": None},
+        ],
+    }]
+    respx.get(f"{API}/projects/{PROJECT}/merge_requests/29/discussions?per_page=100").mock(
+        return_value=httpx.Response(200, json=payload))
+
+    discussion = client.list_discussions(29)[0]
+    assert len(discussion.notes) == 1
+    assert discussion.has_human_reply is False
+    assert discussion.was_ever_disputed is False
+
+
+@respx.mock
+def test_human_reply_after_system_note_is_still_seen(client):
+    payload = [{
+        "id": "d2",
+        "notes": [
+            {"id": 1, "body": "**[rules] что-то**", "system": False,
+             "resolvable": True, "resolved": False},
+            {"id": 2, "body": "changed this line in version 3 of the diff",
+             "system": True, "resolvable": False, "resolved": None},
+            {"id": 3, "body": "это ложное срабатывание, вот почему", "system": False,
+             "resolvable": True, "resolved": False},
+        ],
+    }]
+    respx.get(f"{API}/projects/{PROJECT}/merge_requests/29/discussions?per_page=100").mock(
+        return_value=httpx.Response(200, json=payload))
+
+    discussion = client.list_discussions(29)[0]
+    assert discussion.has_human_reply is True
+    assert discussion.was_ever_disputed is True

@@ -109,3 +109,143 @@ def test_human_reply_with_disappeared_finding_in_untouched_file_goes_to_adjudica
     assert result.to_adjudicate == (f"d-{f.fingerprint}",)
     assert result.to_resolve == ()
     assert result.kept_open == (f"d-{f.fingerprint}",)
+
+
+def _at_line(f: Finding, line: int) -> Finding:
+    return Finding(
+        category=f.category, file=f.file, line_start=line, line_end=line, title=f.title,
+        problem=f.problem, evidence=f.evidence, suggested_fix=f.suggested_fix,
+        confidence=f.confidence,
+    )
+
+
+# Seen on jobbytime-go MR !29: the author closed a finding about an untested
+# Redis repository method with an argument, and the next run found it again and
+# opened a second thread. The fingerprint is built from a line window
+# (line_start // 10) and the push shifted the file, so the accepted argument
+# stopped being recognised. The two-rounds rule cannot break that loop - every
+# run is formally a new finding.
+def test_accepted_argument_survives_line_shift():
+    original = finding(file="internal/repository/redis/redis_repository.go", category="tests")
+    closed = discussion_for(original, resolved=True, human_reply=True)
+
+    shifted = _at_line(original, 89)
+    assert shifted.fingerprint != original.fingerprint, "otherwise the test asserts nothing"
+
+    result = decide([shifted], [closed], ["internal/repository/redis/redis_repository.go"])
+    assert result.to_create == ()
+    assert result.suppressed == (("tests", "internal/repository/redis/redis_repository.go"),)
+
+
+def test_accepted_argument_does_not_suppress_other_categories():
+    original = finding(file="a.go", category="tests")
+    closed = discussion_for(original, resolved=True, human_reply=True)
+
+    other = _at_line(finding(file="a.go", category="bug"), 89)
+    result = decide([other], [closed], ["a.go"])
+    assert [f.category for f in result.to_create] == ["bug"]
+
+
+def test_accepted_argument_does_not_suppress_other_files():
+    original = finding(file="a.go", category="tests")
+    closed = discussion_for(original, resolved=True, human_reply=True)
+
+    other = _at_line(finding(file="b.go", category="tests"), 89)
+    result = decide([other], [closed], ["a.go", "b.go"])
+    assert [f.file for f in result.to_create] == ["b.go"]
+
+
+# A thread the reviewer closed itself, because the finding stopped reproducing,
+# carries no human decision: a regression that brings it back must block again.
+def test_auto_resolved_thread_does_not_suppress_after_shift():
+    original = finding(file="a.go", category="tests")
+    auto_closed = discussion_for(original, resolved=True, human_reply=False)
+
+    shifted = _at_line(original, 89)
+    result = decide([shifted], [auto_closed], ["a.go"])
+    assert [f.file for f in result.to_create] == ["a.go"]
+
+
+# An argument the reviewer REJECTED is not an accepted argument. Suppressing by
+# (category, file) on any disputed thread made a rejected finding vanish: the
+# shifted fingerprint was suppressed, and the old open thread was auto-resolved
+# because its own fingerprint no longer reproduced in a changed file. Net effect
+# - a finding the reviewer stood behind stopped blocking the merge.
+def test_rejected_dispute_does_not_suppress_the_finding():
+    original = finding(file="a.go", category="tests")
+    rejected = Discussion(
+        id="d-rejected",
+        notes=(
+            Note(id=1, body=render_comment(original)),
+            Note(id=2, body="это не проблема"),
+            Note(id=3, body="Замечание остаётся: аргумент не по существу <!-- ai-review:bot -->"),
+        ),
+        resolved=False,
+    )
+
+    shifted = _at_line(original, 89)
+    result = decide([shifted], [rejected], ["a.go"])
+
+    # The drifted finding belongs to the thread that is already arguing about it:
+    # no new thread, the old one stays open and keeps blocking, and the argument
+    # history stays in one place.
+    assert result.to_create == ()
+    assert result.suppressed == ()
+    assert rejected.id in result.kept_open
+    assert rejected.id not in result.to_resolve
+    assert result.blocking_count >= 1
+
+
+# The same drift must not spawn a duplicate next to a thread nobody has replied
+# to yet: before the scope match, a shifted fingerprint minted a second thread
+# about the same defect on every push.
+def test_drifted_finding_reuses_the_open_thread():
+    original = finding(file="a.go", category="tests")
+    open_thread = discussion_for(original)
+
+    shifted = _at_line(original, 89)
+    result = decide([shifted], [open_thread], ["a.go"])
+
+    assert result.to_create == ()
+    assert open_thread.id in result.kept_open
+    assert result.to_resolve == ()
+
+
+# A finding that really is gone still gets its thread closed - the scope match
+# must not turn auto-resolution off.
+def test_thread_is_still_resolved_when_nothing_reproduces():
+    original = finding(file="a.go", category="tests")
+    open_thread = discussion_for(original)
+
+    result = decide([], [open_thread], ["a.go"])
+
+    assert open_thread.id in result.to_resolve
+
+
+# Scope matching cannot tell "the same finding, shifted" from "a different
+# finding of the same category in the same file" - the fingerprint is all we
+# have. The second one is therefore folded into the open thread instead of
+# getting its own. That is a deliberate cost, but it must not be silent: a
+# finding nobody ever sees is worse than a duplicate thread.
+def test_different_finding_in_the_same_scope_is_folded_and_reported():
+    first = finding(file="a.go", category="bug", title="Ошибка не проверяется")
+    open_thread = discussion_for(first)
+
+    second = Finding(
+        category="bug", file="a.go", line_start=89, line_end=89,
+        title="Индекс за границей среза", problem="другая проблема",
+        evidence="другое основание", suggested_fix="другая правка", confidence="high",
+    )
+
+    result = decide([second], [open_thread], ["a.go"])
+
+    assert result.to_create == ()
+    assert open_thread.id in result.kept_open
+    assert result.folded == (("bug", "a.go"),)
+
+
+def test_exact_match_is_not_reported_as_folded():
+    f = finding(file="a.go", category="bug")
+    result = decide([f], [discussion_for(f)], ["a.go"])
+
+    assert result.folded == ()

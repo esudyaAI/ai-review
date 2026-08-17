@@ -27,7 +27,7 @@ class Discussion:
     resolved: bool
 
     @property
-    def _marker(self) -> tuple[str, str] | None:
+    def _marker(self) -> tuple[str, str, str | None] | None:
         if not self.notes:
             return None
         return extract_marker(self.notes[0].body)
@@ -41,6 +41,12 @@ class Discussion:
     def file(self) -> str | None:
         marker = self._marker
         return marker[1] if marker else None
+
+    @property
+    def category(self) -> str | None:
+        """None on threads created before the category was written into the marker."""
+        marker = self._marker
+        return marker[2] if marker else None
 
     @property
     def has_human_reply(self) -> bool:
@@ -129,8 +135,20 @@ class GitLabClient:
         raw = self._get_paginated(f"merge_requests/{mr_iid}/discussions", {"per_page": PAGE_SIZE})
         discussions = []
         for item in raw:
-            notes = tuple(Note(id=n["id"], body=n.get("body", "")) for n in item.get("notes", []))
-            resolved = all(n.get("resolved", False) for n in item.get("notes", [])) if notes else False
+            # GitLab appends a system note ("changed this line in version N of
+            # the diff") to a thread whenever its file is touched afterwards.
+            # It is not part of the conversation, and counting it as one broke
+            # everything downstream: has_human_reply said a human had replied, so
+            # the thread was re-adjudicated on every run with the system note
+            # handed to the model as "the author's argument" - which of course
+            # contains no argument, so the finding was rejected and kept blocking
+            # forever, whatever the author actually did.
+            raw_notes = [n for n in item.get("notes", []) if not n.get("system", False)]
+            notes = tuple(Note(id=n["id"], body=n.get("body", "")) for n in raw_notes)
+            # Only resolvable notes carry a resolution state; an unresolvable one
+            # has `resolved: null`, which used to make a closed thread read as open.
+            resolvable = [n for n in raw_notes if n.get("resolvable", True)]
+            resolved = bool(resolvable) and all(n.get("resolved", False) for n in resolvable)
             discussions.append(Discussion(id=item["id"], notes=notes, resolved=resolved))
         return discussions
 

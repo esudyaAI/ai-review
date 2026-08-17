@@ -14,7 +14,7 @@ REQUIRED_FIELDS = (
     "title", "problem", "evidence", "suggested_fix", "confidence",
 )
 
-MARKER_RE = re.compile(r"<!--\s*ai-review:fp=([0-9a-f]{16});file=(.+?)\s*-->")
+MARKER_RE = re.compile(r"<!--\s*ai-review:fp=([0-9a-f]{16});file=(.+?)(?:;cat=([a-z]+))?\s*-->")
 BOT_NOTE_MARKER = "<!-- ai-review:bot -->"
 
 
@@ -56,15 +56,17 @@ def render_comment(finding: Finding) -> str:
         f"<sub>Найдено автоматически ({finding.source}). "
         f"Если это ложное срабатывание — ответь в этом треде с обоснованием, "
         f"следующий прогон его учтёт.</sub>\n"
-        f"<!-- ai-review:fp={finding.fingerprint};file={finding.file} -->"
+        f"<!-- ai-review:fp={finding.fingerprint};file={finding.file};cat={finding.category} -->"
     )
 
 
-def extract_marker(body: str) -> tuple[str, str] | None:
+def extract_marker(body: str) -> tuple[str, str, str | None] | None:
+    """(fingerprint, file, category). Category is None on threads posted before
+    it was added to the marker - callers must tolerate that."""
     match = MARKER_RE.search(body)
     if match is None:
         return None
-    return match.group(1), match.group(2)
+    return match.group(1), match.group(2), match.group(3)
 
 
 def is_bot_note(body: str) -> bool:

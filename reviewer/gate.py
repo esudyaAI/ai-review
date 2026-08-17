@@ -15,6 +15,8 @@ class GateDecision:
     to_resolve: tuple[str, ...]
     to_adjudicate: tuple[str, ...]
     kept_open: tuple[str, ...]
+    suppressed: tuple[tuple[str, str], ...] = ()
+    folded: tuple[tuple[str, str], ...] = ()
 
     @property
     def blocking_count(self) -> int:
@@ -46,7 +48,50 @@ def decide(
         d.fingerprint for d in discussions
         if d.fingerprint is not None and (not d.resolved or d.was_ever_disputed)
     }
-    to_create = tuple(f for fp, f in found_by_fp.items() if fp not in known_fps)
+    # The fingerprint is positional (category + file + a 10-line window), so any
+    # push that shifts the file mints a new one for the same finding. Observed on
+    # jobbytime-go MR !29: a thread the author closed with an argument came back
+    # under a fresh fingerprint on the next run, and the two-rounds rule cannot
+    # break that loop - every round is a "new" finding.
+    #
+    # So an argument a human actually made and that was ACCEPTED - the thread is
+    # closed - is remembered by (category, file), not by line. An argument the
+    # reviewer rejected is not an accepted argument: its thread stays open, and
+    # suppressing on it would make the finding vanish (the shifted fingerprint
+    # suppressed, the old thread auto-resolved because its own fingerprint no
+    # longer reproduces in a changed file), so a finding the reviewer stands
+    # behind would stop blocking the merge.
+    #
+    # The cost is a real false negative: a genuinely different finding of the
+    # same category in the same file is suppressed too. It is logged for that
+    # reason - silence here would read as "nothing found".
+    accepted_scopes = {
+        (d.category, d.file) for d in discussions
+        if d.resolved and d.was_ever_disputed and d.category is not None and d.file is not None
+    }
+
+    # The same drift also splits a finding away from the thread already arguing
+    # about it. Match by scope as well as by exact fingerprint, so a shifted
+    # finding lands back in its own thread instead of minting a duplicate next
+    # to it, and the argument history stays in one place.
+    open_scopes = {(d.category, d.file) for d in ours if d.category is not None and d.file is not None}
+    found_scopes = {(f.category, f.file) for f in findings}
+
+    not_yet_known = [f for fp, f in found_by_fp.items() if fp not in known_fps]
+    to_create_all = [f for f in not_yet_known if (f.category, f.file) not in open_scopes]
+
+    # Scope matching cannot tell "the same finding, shifted" from "a different
+    # finding in the same file" - the fingerprint is all we have, and it moved.
+    # The second one is folded into the open thread rather than getting its own,
+    # so it has to be reported: a finding nobody ever sees is worse than a
+    # duplicate thread.
+    folded = tuple(sorted(
+        {(f.category, f.file) for f in not_yet_known if (f.category, f.file) in open_scopes}
+    ))
+    to_create = tuple(f for f in to_create_all if (f.category, f.file) not in accepted_scopes)
+    suppressed = tuple(sorted(
+        {(f.category, f.file) for f in to_create_all if (f.category, f.file) in accepted_scopes}
+    ))
     to_resolve: list[str] = []
     kept_open: list[str] = []
     to_adjudicate: list[str] = []
@@ -58,7 +103,9 @@ def decide(
             kept_open.append(discussion.id)
             continue
 
-        if fp in found_by_fp:
+        # Exact fingerprint, or the same (category, file) under a fingerprint the
+        # line drift moved - both mean the finding still reproduces.
+        if fp in found_by_fp or (discussion.category, discussion.file) in found_scopes:
             kept_open.append(discussion.id)
             continue
         if discussion.file in changed:
@@ -72,4 +119,6 @@ def decide(
         to_resolve=tuple(to_resolve),
         to_adjudicate=tuple(to_adjudicate),
         kept_open=tuple(kept_open),
+        suppressed=suppressed,
+        folded=folded,
     )
