@@ -294,17 +294,44 @@ def test_tests_findings_on_code_files_are_kept():
 # findings across seven rounds - one per touched file - including one about
 # ProcessSingleApplication whose tests were in the very same diff. A gap the
 # merge request did not create is not a finding about the merge request.
-def test_tests_finding_is_dropped_when_the_mr_adds_tests_in_that_package():
+def test_tests_finding_is_dropped_when_the_mr_adds_the_matching_test():
     f = finding(file="internal/service/auto_apply_main.go", category="tests")
 
     result = decide(
         [f], [],
-        ["internal/service/auto_apply_main.go", "internal/service/auto_apply_service_test.go"],
+        ["internal/service/auto_apply_main.go", "internal/service/auto_apply_main_test.go"],
         test_globs=("*_test.go",),
     )
 
     assert result.to_create == ()
     assert result.covered_by_new_tests == (("tests", "internal/service/auto_apply_main.go"),)
+
+
+# Caught by the reviewer on !14: a directory match excused findings the changed
+# test had nothing to do with.
+def test_an_unrelated_test_in_the_same_directory_excuses_nothing():
+    f = finding(file="internal/service/auth.go", category="tests")
+
+    result = decide(
+        [f], [],
+        ["internal/service/auth.go", "internal/service/metrics_test.go"],
+        test_globs=("*_test.go",),
+    )
+
+    assert [x.file for x in result.to_create] == ["internal/service/auth.go"]
+
+
+# Also caught on !14: in this repository tests live in tests/unit/ and code in
+# reviewer/, so a directory match never fired where it was needed most.
+def test_python_layout_is_matched_across_directories():
+    f = finding(file="reviewer/gate.py", category="tests")
+
+    result = decide(
+        [f], [], ["reviewer/gate.py", "tests/unit/test_gate.py"], test_globs=("test_*.py",),
+    )
+
+    assert result.to_create == ()
+    assert result.covered_by_new_tests == (("tests", "reviewer/gate.py"),)
 
 
 def test_tests_finding_survives_when_the_mr_adds_no_tests_there():
@@ -317,7 +344,7 @@ def test_tests_finding_survives_when_the_mr_adds_no_tests_there():
 
 
 # Tests added in a different package say nothing about this one.
-def test_tests_added_in_another_package_do_not_excuse_this_file():
+def test_tests_added_elsewhere_do_not_excuse_this_file():
     f = finding(file="internal/service/auto_apply_main.go", category="tests")
 
     result = decide(
@@ -335,7 +362,7 @@ def test_other_categories_are_not_excused_by_new_tests():
 
     result = decide(
         [f], [],
-        ["internal/service/auto_apply_main.go", "internal/service/auto_apply_service_test.go"],
+        ["internal/service/auto_apply_main.go", "internal/service/auto_apply_main_test.go"],
         test_globs=("*_test.go",),
     )
 
@@ -347,7 +374,7 @@ def test_without_known_test_globs_nothing_is_excused():
 
     result = decide(
         [f], [],
-        ["internal/service/auto_apply_main.go", "internal/service/auto_apply_service_test.go"],
+        ["internal/service/auto_apply_main.go", "internal/service/auto_apply_main_test.go"],
         test_globs=(),
     )
 

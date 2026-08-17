@@ -7,7 +7,7 @@ from typing import Sequence
 
 from reviewer.findings import Finding
 from reviewer.gitlab_client import Discussion
-from reviewer.testlayout import can_hold_a_test, is_test_file
+from reviewer.testlayout import can_hold_a_test, covers, is_test_file
 
 
 @dataclass(frozen=True)
@@ -42,20 +42,24 @@ def decide(
     # finding per touched file across seven review rounds - one of them about a
     # function whose tests were in the same diff.
     #
-    # The deterministic half of the answer: if the author added or changed tests
-    # in the same package in this very merge request, a blanket "no coverage"
-    # claim about that package is not a finding about this merge request. The
-    # other half is a matter of judgement and lives in the prompt.
-    packages_with_new_tests = {
-        _package_of(path) for path in changed_files if is_test_file(path, test_globs)
-    }
+    # The deterministic half of the answer: if this merge request adds or changes
+    # the test that belongs to the file by name, a "no coverage" claim about that
+    # file is not a finding about this merge request. Matching is by name, not by
+    # directory - a directory match excused an unrelated metrics_test.go for
+    # auth.go, and never fired at all in a tests/unit/ layout.
+    #
+    # It does not cover every case: a package-wide test file (auth_service_test.go
+    # covering auth_password.go) is not matched by name, and there is no way to
+    # tell from the file list alone whether it covers the finding. That half is a
+    # matter of judgement and lives in the prompt.
+    changed_tests = [p for p in changed_files if is_test_file(p, test_globs)]
     covered_by_new_tests = tuple(sorted(
         {(f.category, f.file) for f in findings
-         if f.category == "tests" and _package_of(f.file) in packages_with_new_tests}
+         if f.category == "tests" and any(covers(f.file, t) for t in changed_tests)}
     ))
     findings = [f for f in findings
                 if not (f.category == "tests"
-                        and _package_of(f.file) in packages_with_new_tests)]
+                        and any(covers(f.file, t) for t in changed_tests))]
 
     # A `tests` finding on a file with nothing to call asks for a unit test of
     # somebody else's configuration format. Three of them landed on one
@@ -161,10 +165,3 @@ def decide(
         not_applicable=not_applicable,
         covered_by_new_tests=covered_by_new_tests,
     )
-
-
-def _package_of(path: str) -> str:
-    """Directory of a file - the unit a test file belongs to in every language
-    the reviewer sees. Go and Python put tests beside or under the package;
-    JavaScript puts them beside the module."""
-    return path.rsplit("/", 1)[0] if "/" in path else ""
