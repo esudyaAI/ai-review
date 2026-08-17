@@ -312,3 +312,46 @@ def test_loop_reports_invalid_argument_type_to_the_model(tools):
 
     tool_messages = [m for m in provider.calls[-1] if m.get("role") == "tool"]
     assert "invalid argument" in tool_messages[0]["content"]
+
+
+# --- Счётчики цикла ревью ---------------------------------------------------
+#
+# Диалог с моделью растёт внутри одного прогона: каждая итерация отправляет всю
+# предыдущую переписку заново, включая результаты read_file и grep. Поэтому
+# «сколько токенов ушло на ревью» само по себе ничего не объясняет — объясняют
+# число итераций и объём прочитанного. Без этих счётчиков вывод о причине роста
+# расхода остаётся догадкой.
+
+
+def test_loop_counts_iterations_tool_calls_and_bytes_read(tmp_path):
+    (tmp_path / "main.go").write_text("package main\n\nfunc main() {}\n", encoding="utf-8")
+    tools = RepoTools(root=tmp_path)
+
+    read = ProviderResponse(
+        tool_calls=(ToolCall(id="t1", name="read_file", arguments={"path": "main.go"}),),
+        text=None,
+    )
+    grep = ProviderResponse(
+        tool_calls=(ToolCall(id="t2", name="grep", arguments={"pattern": "func"}),),
+        text=None,
+    )
+    listing = ProviderResponse(
+        tool_calls=(ToolCall(id="t3", name="list_files", arguments={}),),
+        text=None,
+    )
+    provider = ScriptedProvider([read, grep, listing, submit_call([])])
+    loop = ReviewLoop(provider, tools)
+
+    loop.run("system", "user")
+
+    assert loop.stats.iterations == 4
+    assert loop.stats.tool_calls == 3
+    # Whatever the tools returned had to be paid for as prompt tokens on every
+    # later iteration; the byte count is what makes that visible.
+    assert loop.stats.tool_result_bytes > len("package main")
+
+
+def test_loop_stats_start_at_zero_before_a_run(tmp_path):
+    loop = ReviewLoop(ScriptedProvider([submit_call([])]), RepoTools(root=tmp_path))
+
+    assert (loop.stats.iterations, loop.stats.tool_calls, loop.stats.tool_result_bytes) == (0, 0, 0)

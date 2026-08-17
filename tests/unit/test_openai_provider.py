@@ -125,3 +125,27 @@ def test_complete_without_a_tracker_does_not_error_on_usage(provider):
     with patch.object(provider._client.chat.completions, "create", return_value=response):
         result = provider.complete([{"role": "user", "content": "go"}], [{"type": "function"}])
     assert result.tool_calls[0].name == "list_files"
+
+
+def test_complete_records_usage_under_the_phase_it_was_created_for():
+    # The adjudication pass and the review pass share one tracker; without a phase
+    # on the provider their tokens are indistinguishable in the report.
+    tracker = UsageTracker()
+    provider = OpenAIProvider(
+        api_key="k",
+        base_url="https://example.invalid/v1",
+        model="test-model",
+        usage_tracker=tracker,
+        phase="adjudication",
+    )
+    response = make_response(
+        tool_calls=(),
+        content="text",
+        usage=make_usage(prompt_tokens=700, completion_tokens=70),
+    )
+
+    with patch.object(provider._client.chat.completions, "create", return_value=response):
+        provider.complete([{"role": "user", "content": "hi"}], [])
+
+    assert tracker.by_phase()["adjudication"].prompt_tokens == 700
+    assert "review" not in tracker.by_phase()
