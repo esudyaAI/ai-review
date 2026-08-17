@@ -7,7 +7,7 @@ from typing import Sequence
 
 from reviewer.findings import Finding
 from reviewer.gitlab_client import Discussion
-from reviewer.testlayout import can_hold_a_test
+from reviewer.testlayout import can_hold_a_test, covers, is_test_file
 
 
 @dataclass(frozen=True)
@@ -19,6 +19,7 @@ class GateDecision:
     suppressed: tuple[tuple[str, str], ...] = ()
     folded: tuple[tuple[str, str], ...] = ()
     not_applicable: tuple[tuple[str, str], ...] = ()
+    covered_by_new_tests: tuple[tuple[str, str], ...] = ()
 
     @property
     def blocking_count(self) -> int:
@@ -33,7 +34,33 @@ def decide(
     findings: Sequence[Finding],
     discussions: Sequence[Discussion],
     changed_files: Sequence[str],
+    test_globs: Sequence[str] = (),
 ) -> GateDecision:
+    # The `tests` category has to answer "did this merge request make coverage
+    # worse", not "is this function covered". Asked the second way it reports gaps
+    # the merge request did not create, and on jobbytime-go !33 that produced a
+    # finding per touched file across seven review rounds - one of them about a
+    # function whose tests were in the same diff.
+    #
+    # The deterministic half of the answer: if this merge request adds or changes
+    # the test that belongs to the file by name, a "no coverage" claim about that
+    # file is not a finding about this merge request. Matching is by name, not by
+    # directory - a directory match excused an unrelated metrics_test.go for
+    # auth.go, and never fired at all in a tests/unit/ layout.
+    #
+    # It does not cover every case: a package-wide test file (auth_service_test.go
+    # covering auth_password.go) is not matched by name, and there is no way to
+    # tell from the file list alone whether it covers the finding. That half is a
+    # matter of judgement and lives in the prompt.
+    changed_tests = [p for p in changed_files if is_test_file(p, test_globs)]
+    covered_by_new_tests = tuple(sorted(
+        {(f.category, f.file) for f in findings
+         if f.category == "tests" and any(covers(f.file, t) for t in changed_tests)}
+    ))
+    findings = [f for f in findings
+                if not (f.category == "tests"
+                        and any(covers(f.file, t) for t in changed_tests))]
+
     # A `tests` finding on a file with nothing to call asks for a unit test of
     # somebody else's configuration format. Three of them landed on one
     # .gitlab-ci.yml in !12. The category cannot apply, so the finding is dropped
@@ -111,19 +138,30 @@ def decide(
     to_adjudicate: list[str] = []
 
     for fp, discussion in open_by_fp.items():
-        # Human reply takes priority: always adjudicate, regardless of whether finding reproduces.
-        if discussion.has_human_reply:
-            to_adjudicate.append(discussion.id)
+        # Exact fingerprint, or the same (category, file) under a fingerprint the
+        # line drift moved - both mean the finding still reproduces.
+        reproduces = fp in found_by_fp or (discussion.category, discussion.file) in found_scopes
+
+        # Adjudication is for arguments, and only a reproducing finding can be
+        # argued about. Sending a fixed one there is what made every merge request
+        # drag: the author writes "confirmed, fixed in commit abc", the adjudicator
+        # answers "this does not refute the finding" - true, useless - and the
+        # thread stays open forever. A finding that stopped reproducing in a file
+        # this merge request changed is fixed, and that is not a judgement call.
+        if reproduces:
+            if discussion.has_human_reply:
+                to_adjudicate.append(discussion.id)
             kept_open.append(discussion.id)
             continue
 
-        # Exact fingerprint, or the same (category, file) under a fingerprint the
-        # line drift moved - both mean the finding still reproduces.
-        if fp in found_by_fp or (discussion.category, discussion.file) in found_scopes:
-            kept_open.append(discussion.id)
-            continue
         if discussion.file in changed:
+            # Gone from a file this merge request changed: fixed.
             to_resolve.append(discussion.id)
+        elif discussion.has_human_reply:
+            # Gone from a file nobody touched. That is not a fix, it is the model
+            # being non-deterministic, so a human argument still deserves a verdict.
+            to_adjudicate.append(discussion.id)
+            kept_open.append(discussion.id)
         else:
             # The model is not deterministic; a silently vanished finding is not proof of a fix.
             kept_open.append(discussion.id)
@@ -136,4 +174,5 @@ def decide(
         suppressed=suppressed,
         folded=folded,
         not_applicable=not_applicable,
+        covered_by_new_tests=covered_by_new_tests,
     )

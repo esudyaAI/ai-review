@@ -10,7 +10,9 @@ language".
 
 from __future__ import annotations
 
+from fnmatch import fnmatch
 from pathlib import Path
+from typing import Iterable
 
 # Mask -> the way it is recognised. Kept as a table rather than one regex so
 # adding an ecosystem is a line, and so the mask handed to the model is exactly
@@ -94,3 +96,43 @@ def can_hold_a_test(path: str) -> bool:
         # not units under test.
         return False
     return suffix not in NON_CODE_SUFFIXES
+
+
+def _stem(path: str) -> str:
+    name = Path(path).name
+    # Two suffixes for app.test.tsx, one for auth_test.go - strip until the name
+    # stops looking like a test file.
+    for _ in range(2):
+        name = name.rsplit(".", 1)[0] if "." in name else name
+        if not name.endswith((".test", ".spec")):
+            break
+    return name
+
+
+def covers(source_path: str, test_path: str) -> bool:
+    """True if `test_path` is, by name, the test for `source_path`.
+
+    By name and not by directory: a directory match excused an unrelated
+    metrics_test.go for auth.go, and in a Python layout - tests in tests/unit/,
+    code in reviewer/ - it never matched at all. Both were caught on !14.
+
+    Known conventions: auth.go/auth_test.go, gate.py/test_gate.py and
+    gate_test.py, app.tsx/app.test.tsx and app.spec.tsx, thing.rb/thing_spec.rb.
+    """
+    if source_path == test_path:
+        return False
+    source = _stem(source_path)
+    if not source:
+        return False
+    test = _stem(test_path)
+    return test in {source, f"{source}_test", f"test_{source}", f"{source}_spec"}
+
+
+def is_test_file(path: str, globs: Iterable[str]) -> bool:
+    """True if `path` matches one of the repository's own test masks.
+
+    Masks, not a hardcoded suffix: a Go mask in a Python repository is what
+    started this whole class of mistakes.
+    """
+    name = Path(path).name
+    return any(fnmatch(name, glob) for glob in globs)

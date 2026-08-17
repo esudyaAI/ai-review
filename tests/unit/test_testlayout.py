@@ -3,6 +3,7 @@ from pathlib import Path
 from reviewer.testlayout import (
     NON_CODE_SUFFIXES,
     can_hold_a_test,
+    covers,
     describe_test_layout,
     detect_test_globs,
 )
@@ -88,3 +89,27 @@ def test_can_hold_a_test_rejects_files_without_a_suffix():
 def test_can_hold_a_test_ignores_suffix_case():
     assert can_hold_a_test("CONFIG.YML") is False
     assert can_hold_a_test("Main.GO") is True
+
+
+# Matching a test to its source by directory was wrong twice over, and the
+# reviewer caught both on !14: an unrelated metrics_test.go excused auth.go, and
+# in this repository - tests in tests/unit/, code in reviewer/ - it never matched
+# at all. Names carry the relation; directories do not.
+def test_go_test_matches_its_source_by_name():
+    assert covers("internal/service/auth.go", "internal/service/auth_test.go") is True
+    assert covers("internal/service/auth.go", "internal/service/metrics_test.go") is False
+
+
+def test_python_test_matches_across_directories():
+    assert covers("reviewer/gate.py", "tests/unit/test_gate.py") is True
+    assert covers("reviewer/gate.py", "tests/unit/test_findings.py") is False
+
+
+def test_javascript_test_and_spec_both_match():
+    assert covers("src/app.tsx", "src/app.test.tsx") is True
+    assert covers("src/app.tsx", "src/app.spec.tsx") is True
+    assert covers("src/app.tsx", "src/other.test.tsx") is False
+
+
+def test_a_source_file_does_not_cover_itself():
+    assert covers("reviewer/gate.py", "reviewer/gate.py") is False
