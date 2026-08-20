@@ -110,3 +110,18 @@ def test_subset_of_nothing_is_empty():
         files=(FileDiff("a.go", "a.go", "@@ -1,1 +1,2 @@\n x\n+y\n", (2,)),),
     )
     assert mr.subset(()).files == ()
+
+
+# The gate needs to know which lines the merge request actually added, per file,
+# to tell a finding about this change from a finding about the file it lives in.
+def test_added_lines_by_file_maps_every_file_to_its_new_lines():
+    mr = make_mr([
+        FileDiff("a.go", "a.go", SAMPLE_DIFF, parse_new_lines(SAMPLE_DIFF)),
+        FileDiff("b.go", "b.go", "@@ -1 +1 @@\n+x\n", (1,)),
+    ])
+    assert mr.added_lines_by_file == {"a.go": frozenset({11, 12, 13, 14}), "b.go": frozenset({1})}
+
+
+def test_added_lines_by_file_keeps_a_deletion_only_file_with_an_empty_set():
+    mr = make_mr([FileDiff("gone.go", "gone.go", "@@ -1,2 +0,0 @@\n-x\n-y\n", ())])
+    assert mr.added_lines_by_file == {"gone.go": frozenset()}

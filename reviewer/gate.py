@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -20,6 +21,7 @@ class GateDecision:
     folded: tuple[tuple[str, str], ...] = ()
     not_applicable: tuple[tuple[str, str], ...] = ()
     covered_by_new_tests: tuple[tuple[str, str], ...] = ()
+    outside_diff: tuple[tuple[str, str, int], ...] = ()
 
     @property
     def blocking_count(self) -> int:
@@ -35,7 +37,46 @@ def decide(
     discussions: Sequence[Discussion],
     changed_files: Sequence[str],
     test_globs: Sequence[str] = (),
+    added_lines: Mapping[str, Collection[int]] | None = None,
 ) -> GateDecision:
+    # A finding on a line the merge request did not add is not a finding about
+    # this merge request. On jobbytime-front !20 one was published carrying its
+    # own admission that its line was outside the diff, and counted as open. Its
+    # file was in the diff; the line it named was a context line of a hunk. The
+    # author can neither fix such a finding (the line is not his) nor argue it
+    # away on the merits (it is about somebody else's code), so it can only be
+    # closed by hand - the work the two-rounds rule exists to avoid.
+    #
+    # By line and not by file, because the file-level version does not catch
+    # that case at all: the file was changed, just not on the line reported.
+    #
+    # Deterministic findings are exempt: gitleaks reports the real line of a
+    # secret, and a secret on an untouched line of a file this merge request
+    # edits is a real finding. deterministic.py already drops the ones whose
+    # file is outside the diff.
+    #
+    # `added_lines` is None only for callers with no diff at hand - the tests
+    # written before this rule. review() always passes the mapping; a filter
+    # that dropped everything when it is missing would be worse than no filter.
+    outside_diff: tuple[tuple[str, str, int], ...] = ()
+    dropped_fps: set[str] = set()
+    dropped_scopes: set[tuple[str, str]] = set()
+    if added_lines is not None:
+        kept: list[Finding] = []
+        dropped: list[Finding] = []
+        for finding in findings:
+            inside = (finding.source != "llm"
+                      or finding.line_start in added_lines.get(finding.file, ()))
+            (kept if inside else dropped).append(finding)
+        findings = kept
+        outside_diff = tuple(sorted(
+            {(f.category, f.file, f.line_start) for f in dropped}
+        ))
+        # A thread already open on a dropped finding is left exactly as it is:
+        # resolving it would claim a fix that never happened, and keeping it in
+        # kept_open would block the merge on the very finding just dropped.
+        dropped_fps = {f.fingerprint for f in dropped}
+        dropped_scopes = {(f.category, f.file) for f in dropped}
     # The `tests` category has to answer "did this merge request make coverage
     # worse", not "is this function covered". Asked the second way it reports gaps
     # the merge request did not create, and on jobbytime-go !33 that produced a
@@ -138,6 +179,8 @@ def decide(
     to_adjudicate: list[str] = []
 
     for fp, discussion in open_by_fp.items():
+        if fp in dropped_fps or (discussion.category, discussion.file) in dropped_scopes:
+            continue
         # Exact fingerprint, or the same (category, file) under a fingerprint the
         # line drift moved - both mean the finding still reproduces.
         reproduces = fp in found_by_fp or (discussion.category, discussion.file) in found_scopes
@@ -175,4 +218,5 @@ def decide(
         folded=folded,
         not_applicable=not_applicable,
         covered_by_new_tests=covered_by_new_tests,
+        outside_diff=outside_diff,
     )

@@ -187,9 +187,17 @@ def test_create_discussion_failure_does_not_abort_the_run(tmp_path, capsys):
         )
         for i in range(3)
     ]
+    # All three lines have to be in the diff: the gate drops findings on lines
+    # the merge request did not add, and make_mr()'s single added line would
+    # leave one finding to publish - the isolation this test is about would
+    # never be exercised.
+    wide_mr = MergeRequestDiff(
+        base_sha="b" * 40, head_sha="h" * 40, start_sha="s" * 40,
+        files=(FileDiff("a.go", "a.go", "@@ -1,30 +1,30 @@\n x\n", (2, 12, 22)),),
+    )
     # create_discussion blows up on the 2nd of 3 calls, simulating a GitLab API failure
     # mid-loop (e.g. after successfully posting the first discussion).
-    client = FakeClient(make_mr(), fail_create_discussion_on_call=2)
+    client = FakeClient(wide_mr, fail_create_discussion_on_call=2)
     code = review(make_config(), tmp_path, client, lambda model: FakeReviewer(findings), lambda d: None, mr_iid=7)
     # There are still 3 blocking findings, so the run must still block the merge even
     # though publishing the 2nd one failed.
@@ -432,3 +440,21 @@ def test_diff_without_high_risk_files_reviews_all_of_them_in_one_pass(tmp_path):
     assert factory.calls == [("mini", (
         "internal/stats/pipeline_stats.go", "internal/vacancies/updater.go", "README.md",
     ))]
+
+
+# End to end: review() has to hand the gate the diff's added lines, or the rule
+# above is dead code in production.
+def test_finding_outside_the_diff_is_not_published_and_does_not_block(tmp_path, capsys):
+    off_diff = Finding(
+        category="rules", file="a.go", line_start=132, line_end=132,
+        title="Русский комментарий", problem="p", evidence="e", suggested_fix="s",
+        confidence="high",
+    )
+    client = FakeClient(make_mr())
+    code = review(make_config(), tmp_path, client, lambda model: FakeReviewer([off_diff]),
+                  lambda d: None, mr_iid=7)
+    assert client.created == []
+    assert code == EXIT_CLEAN
+    captured = capsys.readouterr()
+    assert "a.go:132" in captured.out
+    assert "вне изменённого диффа" in captured.out
