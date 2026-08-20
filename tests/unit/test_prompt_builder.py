@@ -75,3 +75,34 @@ def test_system_prompt_renders_the_no_tests_case_too():
     prompt = build_system_prompt("", "Тестов в этом репозитории не найдено.")
     assert "Раскладка тестов." in prompt
     assert "Тестов в этом репозитории не найдено." in prompt
+
+
+# On jobbytime-front !20 the reviewer reported "комментарий содержит русский
+# текст" about a paragraph of CLAUDE.md that has been in Russian since the file
+# was created, as is all documentation in all three repositories; on !21 it
+# reported "русские вкрапления в комментарии" against a diff with zero non-ASCII
+# bytes under src/. The `rules` category named the language convention without
+# ever saying which files it covers, so the model applied it to documentation.
+def test_language_rule_exemption_lists_every_non_code_suffix():
+    from reviewer.testlayout import NON_CODE_SUFFIXES
+
+    prompt = build_system_prompt("", "Тесты: test_*.py")
+    clause = next((line for line in prompt.splitlines() if "не применяется" in line), "")
+    assert clause, "в промпте нет оговорки о файлах, к которым правило языка не применяется"
+    for suffix in NON_CODE_SUFFIXES:
+        assert suffix in clause, suffix
+
+
+# The list is built from NON_CODE_SUFFIXES rather than typed into the template:
+# a second copy of it would drift, and the first copy already exists in code.
+def test_language_rule_exemption_is_built_from_the_code_not_typed_in():
+    from reviewer.prompt_builder import SYSTEM_TEMPLATE
+
+    assert "не применяется" not in SYSTEM_TEMPLATE
+
+
+def test_comment_language_check_is_scoped_to_files_with_code():
+    prompt = build_system_prompt("", "Тесты: test_*.py")
+    line = next((l for l in prompt.splitlines() if "Проверь язык комментариев" in l), "")
+    assert line, "в чеклисте нет пункта про язык комментариев"
+    assert "исполняемым кодом" in line
