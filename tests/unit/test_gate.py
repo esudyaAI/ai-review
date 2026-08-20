@@ -514,3 +514,77 @@ def test_a_surviving_finding_still_blocks_when_another_in_its_file_is_dropped():
     assert result.blocking_count == 1
     assert result.exit_code == 1
     assert result.outside_diff == (("bug", "a.go", 132),)
+
+
+def _relabel(f: Finding, category: str) -> Finding:
+    return Finding(
+        category=category, file=f.file, line_start=f.line_start, line_end=f.line_end,
+        title=f.title, problem=f.problem, evidence=f.evidence,
+        suggested_fix=f.suggested_fix, confidence=f.confidence,
+    )
+
+
+# Seen on jobbytime-front MR !28: the reviewer objected to an include taken from
+# a branch, the author answered in the thread and closed it, and the next run
+# raised the same objection again - as "architecture" where it had been "rules".
+# Same file, same line, same argument, nothing new said.
+#
+# The category is picked by the model, and both the fingerprint and the accepted
+# scope were built on it, so relabelling alone made an answered claim look new.
+# The two-rounds rule cannot converge against a loop the model can restart by
+# renaming its own label.
+def test_accepted_argument_survives_a_relabelled_category():
+    original = finding(file=".gitlab-ci.yml", category="rules")
+    closed = discussion_for(original, resolved=True, human_reply=True)
+
+    relabelled = _relabel(original, "architecture")
+    assert relabelled.fingerprint != original.fingerprint, "otherwise the test asserts nothing"
+
+    result = decide([relabelled], [closed], [".gitlab-ci.yml"])
+    assert result.to_create == ()
+    assert result.suppressed == (("architecture", ".gitlab-ci.yml"),)
+
+
+def test_relabelled_finding_folds_into_the_thread_already_arguing_about_it():
+    # Same defect, seen from the other side: while the thread is still open, a
+    # relabelled finding used to open a second one next to it, splitting the
+    # argument in two and blocking twice for one claim.
+    original = finding(file=".gitlab-ci.yml", category="rules")
+    open_thread = discussion_for(original)
+
+    result = decide([_relabel(original, "architecture")], [open_thread], [".gitlab-ci.yml"])
+    assert result.to_create == ()
+    assert result.folded == (("architecture", ".gitlab-ci.yml"),)
+    assert result.kept_open == (f"d-{original.fingerprint}",)
+
+
+def test_a_different_claim_in_the_same_file_is_still_created():
+    # The guard on the fix: matching on the line as well as the category must
+    # not swallow a finding that is genuinely different. Different category AND
+    # different lines is a different claim.
+    original = finding(file="a.go", category="tests")
+    closed = discussion_for(original, resolved=True, human_reply=True)
+
+    other = _at_line(finding(file="a.go", category="security"), 240)
+    result = decide([other], [closed], ["a.go"])
+    assert [f.category for f in result.to_create] == ["security"]
+
+
+# Raised by the reviewer on jobbytime-ai-review !22, against this very change,
+# and it reproduces: the outside-diff filter still remembered what it dropped as
+# (category, file), while everything else had moved to claim matching. A dropped
+# relabelled finding therefore failed to shield its own open thread, and the
+# thread was resolved as if the finding had been fixed - the exact silent
+# green-out that dropped_scopes exists to prevent.
+def test_relabelled_finding_dropped_outside_the_diff_does_not_resolve_its_thread():
+    original = _at_line(finding(file="a.py", category="rules"), 132)
+    open_thread = discussion_for(original)
+
+    relabelled = _relabel(original, "architecture")
+    result = decide(
+        [relabelled], [open_thread], ["a.py"],
+        added_lines={"a.py": {10}},
+    )
+
+    assert result.to_resolve == (), "тред закрыт как исправленный, хотя находка только отброшена"
+    assert result.kept_open == ()

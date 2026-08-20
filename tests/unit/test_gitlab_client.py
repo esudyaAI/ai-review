@@ -461,3 +461,23 @@ def test_human_reply_after_system_note_is_still_seen(client):
     discussion = client.list_discussions(29)[0]
     assert discussion.has_human_reply is True
     assert discussion.was_ever_disputed is True
+
+
+def test_discussion_reads_the_line_from_the_marker():
+    discussion = Discussion(
+        id="abc",
+        notes=(Note(id=1, body="тело\n<!-- ai-review:fp=0123456789abcdef;file=a.go;cat=rules;line=132 -->"),),
+        resolved=False,
+    )
+    assert discussion.line_bucket == 13
+
+
+def test_discussion_without_a_line_in_the_marker_says_unknown():
+    # Not 0. The gate matches findings on this, and a defaulted bucket would
+    # match line 0-9 of every file a legacy thread was about.
+    discussion = Discussion(
+        id="abc",
+        notes=(Note(id=1, body="тело\n<!-- ai-review:fp=0123456789abcdef;file=a.go;cat=rules -->"),),
+        resolved=False,
+    )
+    assert discussion.line_bucket is None

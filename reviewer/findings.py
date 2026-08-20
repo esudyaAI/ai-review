@@ -14,7 +14,9 @@ REQUIRED_FIELDS = (
     "title", "problem", "evidence", "suggested_fix", "confidence",
 )
 
-MARKER_RE = re.compile(r"<!--\s*ai-review:fp=([0-9a-f]{16});file=(.+?)(?:;cat=([a-z]+))?\s*-->")
+MARKER_RE = re.compile(
+    r"<!--\s*ai-review:fp=([0-9a-f]{16});file=(.+?)(?:;cat=([a-z]+))?(?:;line=(\d+))?\s*-->"
+)
 BOT_NOTE_MARKER = "<!-- ai-review:bot -->"
 
 
@@ -36,14 +38,18 @@ class Finding:
     source: str = "llm"
 
     @property
+    def line_bucket(self) -> int:
+        """A 10-line window. Small shifts above the finding must not move it."""
+        return self.line_start // 10
+
+    @property
     def fingerprint(self) -> str:
         # Deliberately excludes title: the model rephrases the same finding
         # differently across runs, which used to mint a new fingerprint each time -
         # the old thread looked "gone" and got auto-resolved while a duplicate was
         # created next to it. Line is bucketed into a 10-line window so a small
         # shift (e.g. an unrelated edit above it) doesn't do the same thing.
-        line_bucket = self.line_start // 10
-        key = f"{self.category}|{self.file}|{line_bucket}"
+        key = f"{self.category}|{self.file}|{self.line_bucket}"
         return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
 
 
@@ -56,17 +62,22 @@ def render_comment(finding: Finding) -> str:
         f"<sub>Найдено автоматически ({finding.source}). "
         f"Если это ложное срабатывание — ответь в этом треде с обоснованием, "
         f"следующий прогон его учтёт.</sub>\n"
-        f"<!-- ai-review:fp={finding.fingerprint};file={finding.file};cat={finding.category} -->"
+        f"<!-- ai-review:fp={finding.fingerprint};file={finding.file}"
+        f";cat={finding.category};line={finding.line_start} -->"
     )
 
 
-def extract_marker(body: str) -> tuple[str, str, str | None] | None:
-    """(fingerprint, file, category). Category is None on threads posted before
-    it was added to the marker - callers must tolerate that."""
+def extract_marker(body: str) -> tuple[str, str, str | None, int | None] | None:
+    """(fingerprint, file, category, line).
+
+    Category and line are None on threads posted before each was added to the
+    marker - callers must tolerate that, and must not substitute a guess: a
+    guessed line would match something."""
     match = MARKER_RE.search(body)
     if match is None:
         return None
-    return match.group(1), match.group(2), match.group(3)
+    line = int(match.group(4)) if match.group(4) is not None else None
+    return match.group(1), match.group(2), match.group(3), line
 
 
 def is_bot_note(body: str) -> bool:

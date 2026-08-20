@@ -4,11 +4,52 @@ from __future__ import annotations
 
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
-from typing import Sequence
+from typing import NamedTuple, Sequence
 
 from reviewer.findings import Finding
 from reviewer.gitlab_client import Discussion
 from reviewer.testlayout import can_hold_a_test, covers, is_test_file
+
+
+class _Claim(NamedTuple):
+    """What an existing thread is arguing about, with whatever coordinates it has."""
+
+    file: str
+    category: str | None
+    line_bucket: int | None
+
+
+def _claim_of(discussion: Discussion) -> _Claim | None:
+    if discussion.file is None:
+        return None
+    return _Claim(discussion.file, discussion.category, discussion.line_bucket)
+
+
+def _argues_about(claim: _Claim, finding: Finding) -> bool:
+    """Whether a finding is the claim this thread is already about.
+
+    Both coordinates drift, and each drifts on its own. A push shifts the line
+    while the category stays - that is the jobbytime-go !29 case, and matching
+    on (category, file) was the answer to it. A relabelling changes the category
+    while the line stays: on jobbytime-front !28 an objection answered and closed
+    as `rules` came back on the next run as `architecture`, same file, same line,
+    same argument, and counted as new. The category is picked by the model, so
+    that loop can be restarted at will.
+
+    Requiring both coordinates to match lets either drift restart it. Requiring
+    the file alone would swallow every other finding in the file. So: the file,
+    plus at least one coordinate that has not moved.
+
+    The cost is named rather than hidden: a genuinely different finding on the
+    same ten lines, under a different category, is treated as the same claim.
+    Callers report what this suppressed - silence here would read as "nothing
+    found".
+    """
+    if claim.file != finding.file:
+        return False
+    if claim.category is not None and claim.category == finding.category:
+        return True
+    return claim.line_bucket is not None and claim.line_bucket == finding.line_bucket
 
 
 @dataclass(frozen=True)
@@ -65,7 +106,8 @@ def decide(
     # written before this rule. review() always passes the mapping; a filter
     # that dropped everything when it is missing would be worse than no filter.
     outside_diff: tuple[tuple[str, str, int], ...] = ()
-    dropped_scopes: set[tuple[str, str]] = set()
+    dropped_findings: list[Finding] = []
+    surviving_findings: list[Finding] = []
     if added_lines is not None:
         kept: list[Finding] = []
         dropped: list[Finding] = []
@@ -87,8 +129,14 @@ def decide(
         # skipping the thread would take the surviving finding out of the gate
         # entirely and turn it green with a valid open finding on the merge
         # request. Caught by the reviewer itself on !17.
-        dropped_scopes = ({(f.category, f.file) for f in dropped}
-                          - {(f.category, f.file) for f in kept})
+        # Kept as findings, not as (category, file) pairs: the thread they have to
+        # shield is matched by _argues_about like everywhere else. Remembering a
+        # scope here while matching claims elsewhere was a real hole - a dropped
+        # finding that came back relabelled failed to shield its own thread, and
+        # the thread was resolved as if the finding had been fixed. Found by the
+        # reviewer on !22, against the commit that introduced claim matching.
+        dropped_findings = dropped
+        surviving_findings = kept
     # The `tests` category has to answer "did this merge request make coverage
     # worse", not "is this function covered". Asked the second way it reports gaps
     # the merge request did not create, and on jobbytime-go !33 that produced a
@@ -159,20 +207,24 @@ def decide(
     # The cost is a real false negative: a genuinely different finding of the
     # same category in the same file is suppressed too. It is logged for that
     # reason - silence here would read as "nothing found".
-    accepted_scopes = {
-        (d.category, d.file) for d in discussions
-        if d.resolved and d.was_ever_disputed and d.category is not None and d.file is not None
-    }
+    accepted_claims = [
+        claim for claim in (
+            _claim_of(d) for d in discussions if d.resolved and d.was_ever_disputed
+        )
+        if claim is not None
+    ]
 
     # The same drift also splits a finding away from the thread already arguing
     # about it. Match by scope as well as by exact fingerprint, so a shifted
     # finding lands back in its own thread instead of minting a duplicate next
     # to it, and the argument history stays in one place.
-    open_scopes = {(d.category, d.file) for d in ours if d.category is not None and d.file is not None}
-    found_scopes = {(f.category, f.file) for f in findings}
+    open_claims = [claim for claim in (_claim_of(d) for d in ours) if claim is not None]
+
+    def argued_anywhere(claims: Sequence[_Claim], f: Finding) -> bool:
+        return any(_argues_about(claim, f) for claim in claims)
 
     not_yet_known = [f for fp, f in found_by_fp.items() if fp not in known_fps]
-    to_create_all = [f for f in not_yet_known if (f.category, f.file) not in open_scopes]
+    to_create_all = [f for f in not_yet_known if not argued_anywhere(open_claims, f)]
 
     # Scope matching cannot tell "the same finding, shifted" from "a different
     # finding in the same file" - the fingerprint is all we have, and it moved.
@@ -180,22 +232,26 @@ def decide(
     # so it has to be reported: a finding nobody ever sees is worse than a
     # duplicate thread.
     folded = tuple(sorted(
-        {(f.category, f.file) for f in not_yet_known if (f.category, f.file) in open_scopes}
+        {(f.category, f.file) for f in not_yet_known if argued_anywhere(open_claims, f)}
     ))
-    to_create = tuple(f for f in to_create_all if (f.category, f.file) not in accepted_scopes)
+    to_create = tuple(f for f in to_create_all if not argued_anywhere(accepted_claims, f))
     suppressed = tuple(sorted(
-        {(f.category, f.file) for f in to_create_all if (f.category, f.file) in accepted_scopes}
+        {(f.category, f.file) for f in to_create_all if argued_anywhere(accepted_claims, f)}
     ))
     to_resolve: list[str] = []
     kept_open: list[str] = []
     to_adjudicate: list[str] = []
 
     for fp, discussion in open_by_fp.items():
-        if (discussion.category, discussion.file) in dropped_scopes:
+        claim = _claim_of(discussion)
+        if claim is not None and any(_argues_about(claim, f) for f in dropped_findings) \
+                and not any(_argues_about(claim, f) for f in surviving_findings):
             continue
-        # Exact fingerprint, or the same (category, file) under a fingerprint the
-        # line drift moved - both mean the finding still reproduces.
-        reproduces = fp in found_by_fp or (discussion.category, discussion.file) in found_scopes
+        # Exact fingerprint, or the same claim under a fingerprint that drifted -
+        # both mean the finding still reproduces.
+        reproduces = fp in found_by_fp or (
+            claim is not None and any(_argues_about(claim, f) for f in findings)
+        )
 
         # Adjudication is for arguments, and only a reproducing finding can be
         # argued about. Sending a fixed one there is what made every merge request
