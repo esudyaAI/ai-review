@@ -34,6 +34,39 @@ EXIT_FINDINGS = 1
 EXIT_TECHNICAL = 2
 EXIT_TOO_LARGE = 3
 
+# What the log says about each exit code. The codes already told the two failures
+# apart - 1 is "there are blocking findings", 2 is "the review did not happen" -
+# but a person opening a red job saw only the exception text, and in the list of
+# jobs both look identically failed. So every run ends with one line that names
+# the outcome in words next to its code.
+#
+# 2 and 3 are both "the review did not happen" and are fixed differently: 2 by a
+# retry or by fixing the infrastructure, 3 by splitting the merge request. A single
+# shared wording would hide that.
+_OUTCOME_BY_CODE = {
+    EXIT_CLEAN: "замечаний нет",
+    EXIT_FINDINGS: "есть блокирующие замечания",
+    EXIT_TECHNICAL: "ревью не состоялось из-за технической ошибки, помогает повтор",
+    EXIT_TOO_LARGE: "ревью не состоялось: дифф больше лимита, merge request надо разбить",
+}
+
+
+def outcome_line(code: int) -> str:
+    return f"AI review: итог — {_OUTCOME_BY_CODE.get(code, 'неизвестный исход')}, код выхода {code}"
+
+
+def _describe(exc: BaseException) -> str:
+    """Name the exception class, not just its text.
+
+    Measured on httpx 0.28: str() of ReadTimeout, ConnectTimeout, ConnectError and
+    RemoteProtocolError all return the empty string. Every network failure therefore
+    printed "техническая ошибка при получении диффа: " and stopped at the colon,
+    which says nothing about what to fix. The class name is the only thing that
+    survives such an exception, so it goes first.
+    """
+    text = str(exc).strip()
+    return f"{type(exc).__name__}: {text}" if text else f"{type(exc).__name__} (без текста)"
+
 
 def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int, on_loop=None) -> int:
     try:
@@ -43,7 +76,7 @@ def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int, 
         print(f"AI review: {exc}", file=sys.stderr)
         return EXIT_TOO_LARGE
     except Exception as exc:  # noqa: BLE001 - any failure here is technical, not a verdict
-        print(f"AI review: техническая ошибка при получении диффа: {exc}", file=sys.stderr)
+        print(f"AI review: техническая ошибка при получении диффа: {_describe(exc)}", file=sys.stderr)
         return EXIT_TECHNICAL
 
     try:
@@ -71,7 +104,7 @@ def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int, 
         print(f"AI review: ревью не завершено ({exc}), нужен реран", file=sys.stderr)
         return EXIT_TECHNICAL
     except Exception as exc:  # noqa: BLE001
-        print(f"AI review: техническая ошибка ревью: {exc}", file=sys.stderr)
+        print(f"AI review: техническая ошибка ревью: {_describe(exc)}", file=sys.stderr)
         return EXIT_TECHNICAL
 
     blocking = keep_blocking(findings)
@@ -81,7 +114,7 @@ def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int, 
         decision = decide(blocking, discussions, mr.changed_files, detect_test_globs(repo),
                           mr.added_lines_by_file)
     except Exception as exc:  # noqa: BLE001 - a GitLab failure here is technical, not a verdict
-        print(f"AI review: техническая ошибка при работе с GitLab: {exc}", file=sys.stderr)
+        print(f"AI review: техническая ошибка при работе с GitLab: {_describe(exc)}", file=sys.stderr)
         return EXIT_TECHNICAL
 
     # Each mutating call is isolated: a GitLab failure on one finding (network blip, 500,
@@ -94,7 +127,7 @@ def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int, 
             client.create_discussion(mr_iid, finding, mr)
             created_count += 1
         except Exception as exc:  # noqa: BLE001
-            print(f"AI review: не удалось опубликовать находку {finding.fingerprint}: {exc}", file=sys.stderr)
+            print(f"AI review: не удалось опубликовать находку {finding.fingerprint}: {_describe(exc)}", file=sys.stderr)
 
     resolved_count = 0
     for discussion_id in decision.to_resolve:
@@ -102,7 +135,7 @@ def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int, 
             client.resolve(mr_iid, discussion_id, "Замечание исправлено, тред закрыт автоматически.")
             resolved_count += 1
         except Exception as exc:  # noqa: BLE001
-            print(f"AI review: не удалось закрыть тред {discussion_id}: {exc}", file=sys.stderr)
+            print(f"AI review: не удалось закрыть тред {discussion_id}: {_describe(exc)}", file=sys.stderr)
 
     accepted: set[str] = set()
     by_id = {d.id: d for d in discussions}
@@ -116,7 +149,7 @@ def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int, 
             else:
                 client.reply(mr_iid, discussion_id, f"Замечание остаётся: {verdict.reason}")
         except Exception as exc:  # noqa: BLE001
-            print(f"AI review: не удалось обработать адъюдикацию треда {discussion_id}: {exc}", file=sys.stderr)
+            print(f"AI review: не удалось обработать адъюдикацию треда {discussion_id}: {_describe(exc)}", file=sys.stderr)
 
     # blocking_count/exit code reflect the real gate decision regardless of whether
     # publishing to GitLab succeeded (see the isolated try/except above) - a genuine
@@ -171,6 +204,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mr", type=int, required=True)
     args = parser.parse_args(argv)
 
+    code = _run(args)
+    # The outcome line is written last and to stderr on purpose. stdout is block
+    # buffered when the job log is a pipe rather than a terminal, so a line printed
+    # to stdout here can surface above the error it is supposed to summarise.
+    sys.stdout.flush()
+    print(outcome_line(code), file=sys.stderr)
+    return code
+
+
+def _run(args) -> int:
     try:
         repo = Path(os.environ.get("CI_PROJECT_DIR", "."))
         config = load_config(repo / ".ai-review.yml")
@@ -215,7 +258,7 @@ def main(argv: list[str] | None = None) -> int:
             print(warning, file=sys.stderr)
         return code
     except Exception as exc:  # noqa: BLE001 - startup/config/env failures are technical, not a verdict
-        print(f"AI review: техническая ошибка при старте: {exc}", file=sys.stderr)
+        print(f"AI review: техническая ошибка при старте: {_describe(exc)}", file=sys.stderr)
         return EXIT_TECHNICAL
 
 

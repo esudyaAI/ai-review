@@ -458,3 +458,86 @@ def test_finding_outside_the_diff_is_not_published_and_does_not_block(tmp_path, 
     captured = capsys.readouterr()
     assert "a.go:132" in captured.out
     assert "вне изменённого диффа" in captured.out
+
+
+# --- Классификация исхода и читаемость технических ошибок -------------------
+#
+# Технический сбой и «есть замечания» уже различались кодом выхода (2 против 1),
+# но человек, открывший упавший джоб, видел только текст исключения - а у httpx
+# таймауты и обрывы соединения стрингифицируются в пустую строку. Замер на
+# httpx 0.28: str(ReadTimeout("")), str(ConnectTimeout("")), str(ConnectError(""))
+# и str(RemoteProtocolError("")) - все четыре дают ''. То есть лог показывал
+# «AI review: техническая ошибка при получении диффа: » и обрывался на двоеточии.
+
+
+class TimingOutClient(FakeClient):
+    """Клиент, падающий ровно так, как падает сеть: исключение без текста."""
+
+    def __init__(self, mr, error):
+        super().__init__(mr)
+        self.error = error
+
+    def fetch_diff(self, mr_iid):
+        raise self.error
+
+
+def test_technical_error_names_the_exception_type_when_it_has_no_text(tmp_path, capsys):
+    import httpx
+
+    client = TimingOutClient(make_mr(), httpx.ReadTimeout(""))
+    code = review(make_config(), tmp_path, client, lambda model: FakeReviewer([]),
+                  lambda d: None, mr_iid=7)
+
+    assert code == EXIT_TECHNICAL
+    err = capsys.readouterr().err
+    assert "ReadTimeout" in err, err
+    # Строка не должна обрываться на двоеточии - именно так выглядел старый вывод.
+    assert not any(line.rstrip().endswith(":") for line in err.splitlines()), err
+
+
+def test_technical_error_keeps_the_exception_text_when_there_is_one(tmp_path, capsys):
+    client = TimingOutClient(make_mr(), RuntimeError("GitLab вернул 502"))
+    review(make_config(), tmp_path, client, lambda model: FakeReviewer([]),
+           lambda d: None, mr_iid=7)
+
+    err = capsys.readouterr().err
+    assert "RuntimeError" in err, err
+    assert "GitLab вернул 502" in err, err
+
+
+def test_outcome_line_names_every_exit_code():
+    """Последняя строка лога должна называть класс исхода словами, а не только кодом:
+    в списке джобов GitLab «упал, потому что нашёл замечания» и «упал, потому что не
+    смог отревьюить» выглядят одинаково."""
+    from reviewer.__main__ import outcome_line
+
+    for code in (EXIT_CLEAN, EXIT_FINDINGS, EXIT_TECHNICAL, EXIT_TOO_LARGE):
+        line = outcome_line(code)
+        assert str(code) in line, line
+        assert line.startswith("AI review: итог"), line
+
+    assert "замечани" in outcome_line(EXIT_FINDINGS)
+    assert "не состоялось" in outcome_line(EXIT_TECHNICAL)
+    assert "не состоялось" in outcome_line(EXIT_TOO_LARGE)
+    assert "не состоялось" not in outcome_line(EXIT_FINDINGS)
+    assert "не состоялось" not in outcome_line(EXIT_CLEAN)
+
+
+def test_outcome_line_distinguishes_the_two_reasons_a_review_did_not_happen():
+    """Оба кода означают «ревью не состоялось», но чинят их по-разному: 2 - повтором
+    или починкой инфраструктуры, 3 - разбиением merge request'а."""
+    from reviewer.__main__ import outcome_line
+
+    assert outcome_line(EXIT_TECHNICAL) != outcome_line(EXIT_TOO_LARGE)
+
+
+def test_main_prints_the_outcome_line_on_a_startup_failure(tmp_path, monkeypatch, capsys):
+    (tmp_path / ".ai-review.yml").write_text("model: m\n", encoding="utf-8")
+    monkeypatch.setenv("CI_PROJECT_DIR", str(tmp_path))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    code = main(["review", "--mr", "7"])
+
+    assert code == EXIT_TECHNICAL
+    captured = capsys.readouterr()
+    assert "AI review: итог" in (captured.out + captured.err)

@@ -65,6 +65,9 @@ build_image:
   script:
     - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
     - docker build -t "$CI_REGISTRY_IMAGE:v1" -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA" .
-    - docker run --rm "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA" review --mr 1 || true
+    # Runs before the pushes on purpose: an image that fails this never becomes :v1.
+    # It replaces `docker run ... review --mr 1 || true`, which could not fail and so
+    # checked nothing - the job was green while the reviewer died on startup.
+    - sh scripts/image-selfcheck.sh "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
     - docker push "$CI_REGISTRY_IMAGE:v1"
     - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
