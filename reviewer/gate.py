@@ -59,7 +59,6 @@ def decide(
     # written before this rule. review() always passes the mapping; a filter
     # that dropped everything when it is missing would be worse than no filter.
     outside_diff: tuple[tuple[str, str, int], ...] = ()
-    dropped_fps: set[str] = set()
     dropped_scopes: set[tuple[str, str]] = set()
     if added_lines is not None:
         kept: list[Finding] = []
@@ -75,8 +74,15 @@ def decide(
         # A thread already open on a dropped finding is left exactly as it is:
         # resolving it would claim a fix that never happened, and keeping it in
         # kept_open would block the merge on the very finding just dropped.
-        dropped_fps = {f.fingerprint for f in dropped}
-        dropped_scopes = {(f.category, f.file) for f in dropped}
+        #
+        # Only when nothing that survived the drop shares its (category, file).
+        # A surviving finding whose thread is already open is folded into that
+        # thread rather than re-created, so it blocks through kept_open alone -
+        # skipping the thread would take the surviving finding out of the gate
+        # entirely and turn it green with a valid open finding on the merge
+        # request. Caught by the reviewer itself on !17.
+        dropped_scopes = ({(f.category, f.file) for f in dropped}
+                          - {(f.category, f.file) for f in kept})
     # The `tests` category has to answer "did this merge request make coverage
     # worse", not "is this function covered". Asked the second way it reports gaps
     # the merge request did not create, and on jobbytime-go !33 that produced a
@@ -179,7 +185,7 @@ def decide(
     to_adjudicate: list[str] = []
 
     for fp, discussion in open_by_fp.items():
-        if fp in dropped_fps or (discussion.category, discussion.file) in dropped_scopes:
+        if (discussion.category, discussion.file) in dropped_scopes:
             continue
         # Exact fingerprint, or the same (category, file) under a fingerprint the
         # line drift moved - both mean the finding still reproduces.

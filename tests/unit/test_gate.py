@@ -497,3 +497,20 @@ def test_a_dropped_finding_does_not_resolve_its_open_thread():
     f = _finding_at(132)
     result = decide([f], [discussion_for(f)], ["a.go"], (), ADDED)
     assert result.to_resolve == ()
+
+
+# The first version of the drop skipped every open thread sharing a
+# (category, file) with a dropped finding, and the reviewer caught it on its own
+# !17: a finding that survived the drop is folded into its already-open thread
+# instead of being re-created, so it blocks only through kept_open - skipping
+# that thread took it out of the gate entirely and turned the merge green with a
+# valid open finding on it.
+def test_a_surviving_finding_still_blocks_when_another_in_its_file_is_dropped():
+    kept = _finding_at(11)
+    dropped = _finding_at(132)
+    thread = discussion_for(kept)
+    result = decide([kept, dropped], [thread], ["a.go"], (), ADDED)
+    assert result.kept_open == (thread.id,)
+    assert result.blocking_count == 1
+    assert result.exit_code == 1
+    assert result.outside_diff == (("bug", "a.go", 132),)
