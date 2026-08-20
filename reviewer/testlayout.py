@@ -31,6 +31,19 @@ TEST_GLOBS: tuple[tuple[str, str], ...] = (
     ("*.spec.jsx", ".spec.jsx"),
     ("*.spec.ts", ".spec.ts"),
     ("*.spec.tsx", ".spec.tsx"),
+    # The module-suffix half of the same ecosystem: .mjs/.cjs for the ESM and
+    # CommonJS split, .mts/.cts for its TypeScript mirror. Node's own test
+    # runner is reached through them, and leaving them out cost two `tests`
+    # findings on jobbytime-front !21 - the model was handed *.test.js and
+    # *.test.jsx, and scripts/lint-ratchet.test.mjs matched neither.
+    ("*.test.mjs", ".test.mjs"),
+    ("*.spec.mjs", ".spec.mjs"),
+    ("*.test.cjs", ".test.cjs"),
+    ("*.spec.cjs", ".spec.cjs"),
+    ("*.test.mts", ".test.mts"),
+    ("*.spec.mts", ".spec.mts"),
+    ("*.test.cts", ".test.cts"),
+    ("*.spec.cts", ".spec.cts"),
     ("*.bats", ".bats"),
 )
 
