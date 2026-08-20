@@ -568,3 +568,23 @@ def test_a_different_claim_in_the_same_file_is_still_created():
     other = _at_line(finding(file="a.go", category="security"), 240)
     result = decide([other], [closed], ["a.go"])
     assert [f.category for f in result.to_create] == ["security"]
+
+
+# Raised by the reviewer on jobbytime-ai-review !22, against this very change,
+# and it reproduces: the outside-diff filter still remembered what it dropped as
+# (category, file), while everything else had moved to claim matching. A dropped
+# relabelled finding therefore failed to shield its own open thread, and the
+# thread was resolved as if the finding had been fixed - the exact silent
+# green-out that dropped_scopes exists to prevent.
+def test_relabelled_finding_dropped_outside_the_diff_does_not_resolve_its_thread():
+    original = _at_line(finding(file="a.py", category="rules"), 132)
+    open_thread = discussion_for(original)
+
+    relabelled = _relabel(original, "architecture")
+    result = decide(
+        [relabelled], [open_thread], ["a.py"],
+        added_lines={"a.py": {10}},
+    )
+
+    assert result.to_resolve == (), "тред закрыт как исправленный, хотя находка только отброшена"
+    assert result.kept_open == ()

@@ -106,7 +106,8 @@ def decide(
     # written before this rule. review() always passes the mapping; a filter
     # that dropped everything when it is missing would be worse than no filter.
     outside_diff: tuple[tuple[str, str, int], ...] = ()
-    dropped_scopes: set[tuple[str, str]] = set()
+    dropped_findings: list[Finding] = []
+    surviving_findings: list[Finding] = []
     if added_lines is not None:
         kept: list[Finding] = []
         dropped: list[Finding] = []
@@ -128,8 +129,14 @@ def decide(
         # skipping the thread would take the surviving finding out of the gate
         # entirely and turn it green with a valid open finding on the merge
         # request. Caught by the reviewer itself on !17.
-        dropped_scopes = ({(f.category, f.file) for f in dropped}
-                          - {(f.category, f.file) for f in kept})
+        # Kept as findings, not as (category, file) pairs: the thread they have to
+        # shield is matched by _argues_about like everywhere else. Remembering a
+        # scope here while matching claims elsewhere was a real hole - a dropped
+        # finding that came back relabelled failed to shield its own thread, and
+        # the thread was resolved as if the finding had been fixed. Found by the
+        # reviewer on !22, against the commit that introduced claim matching.
+        dropped_findings = dropped
+        surviving_findings = kept
     # The `tests` category has to answer "did this merge request make coverage
     # worse", not "is this function covered". Asked the second way it reports gaps
     # the merge request did not create, and on jobbytime-go !33 that produced a
@@ -236,11 +243,12 @@ def decide(
     to_adjudicate: list[str] = []
 
     for fp, discussion in open_by_fp.items():
-        if (discussion.category, discussion.file) in dropped_scopes:
-            continue
-        # Exact fingerprint, or the same (category, file) under a fingerprint the
-        # line drift moved - both mean the finding still reproduces.
         claim = _claim_of(discussion)
+        if claim is not None and any(_argues_about(claim, f) for f in dropped_findings) \
+                and not any(_argues_about(claim, f) for f in surviving_findings):
+            continue
+        # Exact fingerprint, or the same claim under a fingerprint that drifted -
+        # both mean the finding still reproduces.
         reproduces = fp in found_by_fp or (
             claim is not None and any(_argues_about(claim, f) for f in findings)
         )
