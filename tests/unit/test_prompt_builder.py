@@ -106,3 +106,15 @@ def test_comment_language_check_is_scoped_to_files_with_code():
     line = next((l for l in prompt.splitlines() if "Проверь язык комментариев" in l), "")
     assert line, "в чеклисте нет пункта про язык комментариев"
     assert "исполняемым кодом" in line
+
+
+# The filter that drops a finding outside the diff cost the reviewer a true
+# finding of its own on !17: the code it was about is on lines 188-189, the
+# finding was anchored to 185, and the drop removed it. The filter is right -
+# the model was never told which line it has to name.
+def test_the_prompt_requires_a_finding_to_sit_on_a_changed_line():
+    prompt = build_system_prompt("", "Тесты: test_*.py")
+    rule = next((l for l in prompt.splitlines() if l.startswith("1a.")), "")
+    assert rule, "в жёстких правилах отчёта нет пункта про привязку к изменённой строке"
+    assert "изменил" in rule
+    assert "отбрасывается" in rule
