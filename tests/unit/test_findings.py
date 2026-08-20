@@ -60,7 +60,7 @@ def test_comment_roundtrips_through_marker():
     body = render_comment(finding)
     assert finding.title in body
     assert finding.suggested_fix in body
-    assert extract_marker(body) == (finding.fingerprint, finding.file, finding.category)
+    assert extract_marker(body) == (finding.fingerprint, finding.file, finding.category, finding.line_start)
 
 
 def test_extract_marker_returns_none_for_human_comment():
@@ -160,4 +160,22 @@ def test_parse_findings_rejects_non_string_fields(field, invalid_value):
 # the whole fingerprint history goes foreign the moment a new version ships.
 def test_marker_without_category_is_still_parsed():
     legacy = "<!-- ai-review:fp=0123456789abcdef;file=internal/service/a.go -->"
-    assert extract_marker(legacy) == ("0123456789abcdef", "internal/service/a.go", None)
+    assert extract_marker(legacy) == ("0123456789abcdef", "internal/service/a.go", None, None)
+
+
+def test_marker_carries_the_line_the_finding_was_made_on():
+    # The line is what tells a relabelled finding from a genuinely different
+    # one: the model can change the category at will, but it cannot move the
+    # code it is objecting to. Without the line in the marker, a thread read
+    # back from GitLab has no coordinate except the category.
+    marker = extract_marker(render_comment(make_finding(line_start=132)))
+    assert marker == (make_finding(line_start=132).fingerprint, "internal/billing/subscription.go", "bug", 132)
+
+
+def test_marker_written_before_the_line_existed_is_still_readable():
+    # Threads posted by earlier versions carry no line. They must keep parsing,
+    # and say so with None rather than a guess - a guessed line would match
+    # something.
+    old = "<!-- ai-review:fp=0123456789abcdef;file=a.go;cat=tests -->"
+    assert extract_marker(old) == ("0123456789abcdef", "a.go", "tests", None)
+

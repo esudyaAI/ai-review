@@ -27,7 +27,7 @@ class Discussion:
     resolved: bool
 
     @property
-    def _marker(self) -> tuple[str, str, str | None] | None:
+    def _marker(self) -> tuple[str, str, str | None, int | None] | None:
         if not self.notes:
             return None
         return extract_marker(self.notes[0].body)
@@ -47,6 +47,19 @@ class Discussion:
         """None on threads created before the category was written into the marker."""
         marker = self._marker
         return marker[2] if marker else None
+
+    @property
+    def line_bucket(self) -> int | None:
+        """The 10-line window this thread is about.
+
+        None on threads created before the line was written into the marker.
+        None means "unknown", never "line 0": the gate matches on it, and a
+        default would match a real finding.
+        """
+        marker = self._marker
+        if marker is None or marker[3] is None:
+            return None
+        return marker[3] // 10
 
     @property
     def has_human_reply(self) -> bool:
