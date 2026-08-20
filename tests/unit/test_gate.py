@@ -431,3 +431,86 @@ def test_vanished_finding_in_an_untouched_file_stays_open():
 
     assert quiet.id in result.kept_open
     assert quiet.id not in result.to_resolve
+
+
+# On jobbytime-front !20 a finding arrived carrying its own admission - the note
+# said in so many words that CLAUDE.md line 132 was outside the diff and that the
+# comment could not be anchored to a line - and was published anyway and counted
+# as open. The file was in the diff; line 132 was a context line of the hunk at
+# +130,9 (checked against the merge request diff). Such a finding cannot be fixed
+# inside the merge request (it did not touch that line) and cannot be argued
+# with on the merits (it is about somebody else's code), so it can only be closed
+# by hand - exactly the work the two-rounds rule exists to avoid.
+def _finding_at(line: int, file="a.go", source="llm", category="bug") -> Finding:
+    return Finding(
+        category=category, file=file, line_start=line, line_end=line,
+        title=f"Находка на {line}", problem="p", evidence="e", suggested_fix="s",
+        confidence="high", source=source,
+    )
+
+
+ADDED = {"a.go": frozenset({10, 11, 12})}
+
+
+def test_finding_on_a_line_the_merge_request_did_not_add_is_dropped():
+    result = decide([_finding_at(132)], [], ["a.go"], (), ADDED)
+    assert result.to_create == ()
+    assert result.blocking_count == 0
+    assert result.exit_code == 0
+    assert result.outside_diff == (("bug", "a.go", 132),)
+
+
+def test_finding_on_an_added_line_is_kept():
+    result = decide([_finding_at(11)], [], ["a.go"], (), ADDED)
+    assert [f.line_start for f in result.to_create] == [11]
+    assert result.outside_diff == ()
+
+
+def test_finding_in_a_file_the_merge_request_never_touched_is_dropped():
+    result = decide([_finding_at(11, file="other.go")], [], ["a.go"], (), ADDED)
+    assert result.to_create == ()
+    assert result.outside_diff == (("bug", "other.go", 11),)
+
+
+# gitleaks reports the real line of the secret, and a secret sitting on an
+# untouched line of a file this merge request edits is a real finding, not an
+# artefact of where the model happened to look. Deterministic findings are
+# already filtered by file in deterministic.py; the line rule is for the model.
+def test_a_deterministic_finding_survives_on_an_untouched_line():
+    result = decide([_finding_at(500, source="gitleaks", category="security")], [], ["a.go"], (), ADDED)
+    assert [f.line_start for f in result.to_create] == [500]
+    assert result.outside_diff == ()
+
+
+# Without diff line information there is nothing to compare against, and a filter
+# that drops everything would be worse than no filter at all. Only tests that
+# predate this rule call decide() that way; review() always passes the mapping.
+def test_without_line_information_nothing_is_dropped():
+    result = decide([_finding_at(132)], [], ["a.go"])
+    assert [f.line_start for f in result.to_create] == [132]
+    assert result.outside_diff == ()
+
+
+# The drop must not swallow the history of an argument: a thread already open on
+# a finding that is now dropped is left alone, not resolved as "fixed".
+def test_a_dropped_finding_does_not_resolve_its_open_thread():
+    f = _finding_at(132)
+    result = decide([f], [discussion_for(f)], ["a.go"], (), ADDED)
+    assert result.to_resolve == ()
+
+
+# The first version of the drop skipped every open thread sharing a
+# (category, file) with a dropped finding, and the reviewer caught it on its own
+# !17: a finding that survived the drop is folded into its already-open thread
+# instead of being re-created, so it blocks only through kept_open - skipping
+# that thread took it out of the gate entirely and turned the merge green with a
+# valid open finding on it.
+def test_a_surviving_finding_still_blocks_when_another_in_its_file_is_dropped():
+    kept = _finding_at(11)
+    dropped = _finding_at(132)
+    thread = discussion_for(kept)
+    result = decide([kept, dropped], [thread], ["a.go"], (), ADDED)
+    assert result.kept_open == (thread.id,)
+    assert result.blocking_count == 1
+    assert result.exit_code == 1
+    assert result.outside_diff == (("bug", "a.go", 132),)

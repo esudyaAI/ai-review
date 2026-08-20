@@ -38,6 +38,15 @@ class MergeRequestDiff:
     def changed_files(self) -> tuple[str, ...]:
         return tuple(f.new_path for f in self.files)
 
+    @property
+    def added_lines_by_file(self) -> dict[str, frozenset[int]]:
+        """Per file, the line numbers this merge request adds on the new side.
+
+        A file that only loses lines stays in the mapping with an empty set: it
+        is part of the change, and "no added lines" is an answer, not a gap.
+        """
+        return {f.new_path: frozenset(f.new_lines) for f in self.files}
+
     def subset(self, paths: Iterable[str]) -> "MergeRequestDiff":
         """The same merge request narrowed to `paths`, shas untouched.
 
