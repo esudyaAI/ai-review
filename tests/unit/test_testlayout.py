@@ -6,6 +6,7 @@ from reviewer.testlayout import (
     covers,
     describe_test_layout,
     detect_test_globs,
+    is_test_file,
 )
 
 
@@ -113,3 +114,39 @@ def test_javascript_test_and_spec_both_match():
 
 def test_a_source_file_does_not_cover_itself():
     assert covers("reviewer/gate.py", "reviewer/gate.py") is False
+
+
+# Node's own test runner and every ESM-only tool are .mjs; the CommonJS half of
+# the same split is .cjs, and TypeScript mirrors both as .mts/.cts. The table
+# listed .js/.jsx/.ts/.tsx and none of these, so on jobbytime-front !21 the
+# model was handed *.test.js and *.test.jsx, grepped for them against
+# scripts/lint-ratchet.mjs, found nothing and reported two `tests` findings -
+# while scripts/lint-ratchet.test.mjs held 11 passing tests run by the lint job
+# in that same pipeline. Same class of mistake as the Go mask in a Python
+# repository; only the ecosystem is different.
+def test_node_esm_layout_is_detected(tmp_path):
+    _touch(tmp_path, "scripts/lint-ratchet.mjs", "scripts/lint-ratchet.test.mjs")
+    assert detect_test_globs(tmp_path) == ("*.test.mjs",)
+    assert "*.test.mjs" in describe_test_layout(tmp_path)
+
+
+def test_commonjs_and_typescript_module_layouts_are_detected(tmp_path):
+    _touch(
+        tmp_path,
+        "legacy/loader.cjs", "legacy/loader.test.cjs",
+        "src/pipe.mts", "src/pipe.spec.mts",
+        "src/legacy.cts", "src/legacy.test.cts",
+    )
+    assert detect_test_globs(tmp_path) == ("*.spec.mts", "*.test.cjs", "*.test.cts")
+
+
+# The gate's other half: a test file it does not recognise cannot excuse the
+# source file it belongs to, so the "tests were added in this very diff" drop
+# never fired for an .mjs test either.
+def test_node_esm_test_file_is_recognised_and_covers_its_source(tmp_path):
+    _touch(tmp_path, "scripts/lint-ratchet.mjs", "scripts/lint-ratchet.test.mjs")
+    globs = detect_test_globs(tmp_path)
+    assert is_test_file("scripts/lint-ratchet.test.mjs", globs) is True
+    assert is_test_file("scripts/lint-ratchet.mjs", globs) is False
+    assert covers("scripts/lint-ratchet.mjs", "scripts/lint-ratchet.test.mjs") is True
+    assert covers("scripts/lint-ratchet.mjs", "scripts/other.test.mjs") is False
