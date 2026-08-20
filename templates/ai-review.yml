@@ -23,6 +23,17 @@ ai-review:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - when: never
+  # Exit codes are the reviewer's contract with the pipeline:
+  #   0 - clean, 1 - blocking findings, 2 - the review did not happen (technical),
+  #   3 - the review did not happen (diff over the limit).
+  # Only 2 is worth retrying. Retrying 1 costs a second review and cannot change the
+  # answer - findings are a function of the diff, not of the attempt. Retrying 3 is
+  # pointless: the diff is the same size on the second run. One retry, not two: a
+  # second failure is not a network blip, it is something to fix by hand, and every
+  # extra attempt is paid for in model tokens.
+  retry:
+    max: 1
+    exit_codes: [2]
   variables:
     GIT_DEPTH: "0"
   script:
