@@ -460,18 +460,20 @@ def test_finding_outside_the_diff_is_not_published_and_does_not_block(tmp_path, 
     assert "вне изменённого диффа" in captured.out
 
 
-# --- Классификация исхода и читаемость технических ошибок -------------------
+# --- Outcome classification and readable technical errors -------------------
 #
-# Технический сбой и «есть замечания» уже различались кодом выхода (2 против 1),
-# но человек, открывший упавший джоб, видел только текст исключения - а у httpx
-# таймауты и обрывы соединения стрингифицируются в пустую строку. Замер на
-# httpx 0.28: str(ReadTimeout("")), str(ConnectTimeout("")), str(ConnectError(""))
-# и str(RemoteProtocolError("")) - все четыре дают ''. То есть лог показывал
-# «AI review: техническая ошибка при получении диффа: » и обрывался на двоеточии.
+# A technical failure and "there are findings" were already told apart by the exit
+# code (2 against 1), but a person opening a failed job saw only the exception
+# text - and httpx stringifies timeouts and dropped connections to the empty
+# string. Measured on httpx 0.28: str(ReadTimeout("")), str(ConnectTimeout("")),
+# str(ConnectError("")) and str(RemoteProtocolError("")) all return ''. So the log
+# printed the Russian prefix and stopped at the colon, saying nothing.
+#
+# The Russian string literals below are the reviewer's own output, i.e. data.
 
 
 class TimingOutClient(FakeClient):
-    """Клиент, падающий ровно так, как падает сеть: исключение без текста."""
+    """A client that fails the way the network fails: an exception with no text."""
 
     def __init__(self, mr, error):
         super().__init__(mr)
@@ -491,24 +493,24 @@ def test_technical_error_names_the_exception_type_when_it_has_no_text(tmp_path, 
     assert code == EXIT_TECHNICAL
     err = capsys.readouterr().err
     assert "ReadTimeout" in err, err
-    # Строка не должна обрываться на двоеточии - именно так выглядел старый вывод.
+    # The line must not end at a colon - that is exactly how the old output looked.
     assert not any(line.rstrip().endswith(":") for line in err.splitlines()), err
 
 
 def test_technical_error_keeps_the_exception_text_when_there_is_one(tmp_path, capsys):
-    client = TimingOutClient(make_mr(), RuntimeError("GitLab вернул 502"))
+    client = TimingOutClient(make_mr(), RuntimeError("GitLab returned 502"))
     review(make_config(), tmp_path, client, lambda model: FakeReviewer([]),
            lambda d: None, mr_iid=7)
 
     err = capsys.readouterr().err
     assert "RuntimeError" in err, err
-    assert "GitLab вернул 502" in err, err
+    assert "GitLab returned 502" in err, err
 
 
 def test_outcome_line_names_every_exit_code():
-    """Последняя строка лога должна называть класс исхода словами, а не только кодом:
-    в списке джобов GitLab «упал, потому что нашёл замечания» и «упал, потому что не
-    смог отревьюить» выглядят одинаково."""
+    """The last line of the log must name the class of outcome in words, not only by
+    code: in GitLab's list of jobs, "failed because it found something" and "failed
+    because it could not review" look identical."""
     from reviewer.__main__ import outcome_line
 
     for code in (EXIT_CLEAN, EXIT_FINDINGS, EXIT_TECHNICAL, EXIT_TOO_LARGE):
@@ -524,8 +526,8 @@ def test_outcome_line_names_every_exit_code():
 
 
 def test_outcome_line_distinguishes_the_two_reasons_a_review_did_not_happen():
-    """Оба кода означают «ревью не состоялось», но чинят их по-разному: 2 - повтором
-    или починкой инфраструктуры, 3 - разбиением merge request'а."""
+    """Both codes mean the review did not happen, but they are fixed differently: 2
+    by a retry or by fixing infrastructure, 3 by splitting the merge request."""
     from reviewer.__main__ import outcome_line
 
     assert outcome_line(EXIT_TECHNICAL) != outcome_line(EXIT_TOO_LARGE)

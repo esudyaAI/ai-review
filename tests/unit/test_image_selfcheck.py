@@ -1,13 +1,16 @@
-"""Проверки самого скрипта, проверяющего образ.
+"""Checks on the script that checks the image.
 
-Скрипт запускается только в джобе build_image на main — то есть там, где ошибку в нём
-уже некому заметить. Ровно этим и был плох его предшественник: `docker run ... || true`
-никогда не падал, и никто год не замечал, что проверка ничего не проверяет. Поэтому
-здесь проверяется не «что печатает скрипт», а единственное свойство, которое у него
-сломалось в прошлый раз: провал любой из проверок обязан завалить скрипт.
+The script runs only in build_image on main - that is, where a mistake in it has
+nobody left to notice. That is exactly what was wrong with its predecessor:
+`docker run ... || true` could never fail, and nobody noticed the check was
+checking nothing. So what is tested here is not what the script prints but the one
+property that broke last time: a failure of any single check must fail the script.
 
-Контейнерный рантайм подменяется заглушкой через DOCKER_CMD — так же, как в
-jobbytime-go скрипты подменяют сканер через SECRET_SCAN_CMD.
+The container runtime is replaced by a stub through DOCKER_CMD, the same way
+jobbytime-go's scripts replace the scanner through SECRET_SCAN_CMD.
+
+The Russian strings in the stub are data, not prose: they imitate the reviewer's
+real output, which the script greps for.
 """
 
 import subprocess
@@ -103,19 +106,19 @@ def test_a_healthy_image_passes(stub):
     ],
 )
 def test_every_broken_image_fails_the_script(stub, mode, expected):
-    """По одному сломанному свойству на строку. Если какая-то проверка перестанет
-    заваливать скрипт — падёт ровно её параметр, и видно, какая именно."""
+    """One broken property per row. If some check stops failing the script, exactly
+    its own parameter fails, and it is visible which one."""
     result = run(stub, mode)
-    assert result.returncode != 0, f"{mode}: скрипт не упал\n{result.stdout}{result.stderr}"
+    assert result.returncode != 0, f"{mode}: the script did not fail\n{result.stdout}{result.stderr}"
     if expected:
         assert expected in result.stderr, f"{mode}: {result.stderr}"
 
 
 def test_the_exit_code_check_does_not_accept_the_findings_code(stub):
-    """Отдельно и подробно, потому что это самая тихая из возможных поломок: образ,
-    у которого упавший старт возвращает 1, выглядит для потребителя как «ревьюер нашёл
-    замечания». Пайплайн краснеет по правильной причине с неправильным объяснением, а
-    ретрай, настроенный на код 2, не срабатывает."""
+    """Spelled out separately because it is the quietest failure available: an image
+    whose failed start returns 1 looks to the consumer like "the reviewer found
+    something". The pipeline goes red for the right reason with the wrong
+    explanation, and a retry keyed on exit code 2 never fires."""
     result = run(stub, "startup-returns-findings-code")
     assert result.returncode == 1
     assert "got 1" in result.stderr, result.stderr
