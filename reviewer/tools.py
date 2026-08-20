@@ -47,9 +47,29 @@ class RepoTools:
         start = max(offset - 1, 0)
         return "\n".join(lines[start : start + limit])
 
+    @staticmethod
+    def _make_recursive(path_glob: str) -> str:
+        """Turn a bare file mask into one that reaches the whole tree.
+
+        Path.glob only looks at the repository root unless the pattern says
+        otherwise, so `*_test.go` matches nothing in a project whose tests live
+        in packages. That is not a hypothetical: the reviewer reported "no tests
+        exist" on jobbytime-go merge requests where every test was present, and
+        the evidence line it gave was a grep over `*_test.go`. Every test in that
+        repository is below the root, so the mask could not reach a single one.
+
+        A pattern that names a directory is left alone - `internal/*.go` is an
+        author saying where to look. A bare mask is a question about the whole
+        repository, which is how every other search tool reads it.
+        """
+        if "/" in path_glob:
+            return path_glob
+        return f"**/{path_glob}"
+
     def _candidates(self, path_glob: str) -> list[Path]:
         if path_glob.startswith("/"):
             raise ToolError("absolute glob patterns are not allowed")
+        path_glob = self._make_recursive(path_glob)
         try:
             matches = sorted(self.root.glob(path_glob))
         except ValueError as exc:
@@ -125,7 +145,12 @@ TOOL_SCHEMAS: list[dict] = [
         "type": "function",
         "function": {
             "name": "grep",
-            "description": "Search the repository with a regular expression.",
+            "description": (
+                "Search the repository with a regular expression. "
+                "path_glob matches the whole tree: a bare mask such as "
+                "'*_test.go' searches every directory, not only the root. "
+                "Name a directory - 'internal/*.go' - to narrow it."
+            ),
             "parameters": {
                 "type": "object",
                 "required": ["pattern"],
@@ -141,7 +166,11 @@ TOOL_SCHEMAS: list[dict] = [
         "type": "function",
         "function": {
             "name": "list_files",
-            "description": "List repository files matching a glob.",
+            "description": (
+                "List repository files matching a glob. path_glob matches the "
+                "whole tree: a bare mask such as '*_test.go' lists every "
+                "directory, not only the root."
+            ),
             "parameters": {
                 "type": "object",
                 "required": [],
