@@ -55,6 +55,12 @@ def decide(
     # edits is a real finding. deterministic.py already drops the ones whose
     # file is outside the diff.
     #
+    # The other half of the rule lives in the prompt (system.md, 1a): the model
+    # is told to name a line the merge request changed and to describe a
+    # consequence elsewhere in words. Without it the drop costs true findings -
+    # it took one of its own on !17, where the code was on 188-189 and the
+    # finding was anchored to 185.
+    #
     # `added_lines` is None only for callers with no diff at hand - the tests
     # written before this rule. review() always passes the mapping; a filter
     # that dropped everything when it is missing would be worse than no filter.
