@@ -85,7 +85,26 @@ def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int, 
         # Each half of the diff is reviewed by the model its own risk deserves.
         # Routing per merge request instead of per file meant one auth file made
         # the strong model read all nine files of jobbytime-go !29 at $30/M output.
-        high_risk_files, other_files = config.split_by_risk(mr.changed_files)
+        # Content matters as well as path: `migrations/*` used to send every
+        # migration to the strong model, including one whose whole body was
+        # ADD COLUMN. See Config.high_risk_content.
+        #
+        # The file is read from the checkout, not from the diff. A diff would be
+        # narrower -- only added lines -- but it would also call a change that
+        # DELETES a `DROP COLUMN` line risky, and miss a narrowing statement that
+        # was merely moved. Reading the file errs towards the expensive model,
+        # which is the direction to err in.
+        def read_content(path: str) -> str | None:
+            candidate = repo / path
+            try:
+                if not candidate.is_file():
+                    return None
+                return candidate.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                # Unreadable is unknown, not safe: is_high_risk falls back to path.
+                return None
+
+        high_risk_files, other_files = config.split_by_risk(mr.changed_files, read_content)
         passes = [
             (config.model_high_risk, high_risk_files),
             (config.model, other_files),
