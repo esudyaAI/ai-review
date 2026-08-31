@@ -44,6 +44,21 @@ class Config:
     #
     # Matched case-insensitively: SQL is written both ways.
     high_risk_content: tuple[str, ...] = ()
+    # Файлы, изменение которых само по себе ревьюировать незачем: документация,
+    # лицензия, картинки. Если диффом задеты ТОЛЬКО они, прогон отменяется до
+    # первого обращения к модели.
+    #
+    # Замер по 20 последним смёрженным MR jobbytime-go: 4 из 20 не трогали
+    # ничего, кроме .md. Ревью каждого стоило столько же, сколько ревью кода.
+    #
+    # Умолчание пустое намеренно. В одном репозитории .md — заметки, в другом —
+    # содержимое сайта или контракт API. Угадывать за репозиторий значит однажды
+    # молча не проверить то, что проверить стоило.
+    #
+    # CLAUDE.md в такой список класть не следует, и это не мелочь: он задаёт
+    # правила, по которым ревьюируется весь остальной код. Правка в нём меняет
+    # поведение всех будущих прогонов — это ближе к коду, чем к документации.
+    skip_paths: tuple[str, ...] = ()
     limits: Limits = field(default_factory=Limits)
     # Per-model USD price per million tokens, e.g. {"gpt-x": {"input": 0.75,
     # "output": 4.50, "cached_input": 0.50}}. A model with no entry here still
@@ -74,6 +89,23 @@ class Config:
         return any(
             re.search(pattern, content, re.IGNORECASE)
             for pattern in self.high_risk_content
+        )
+
+    def is_review_pointless(self, changed_files: Iterable[str]) -> bool:
+        """Дифф целиком состоит из файлов, ради которых ревью не запускают.
+
+        Пустой дифф сюда не попадает: это не «нечего ревьюировать», а странное
+        состояние, и выходить на нём нулём значило бы его спрятать.
+        """
+        paths = tuple(changed_files)
+        if not paths or not self.skip_paths:
+            return False
+        return all(
+            any(
+                fnmatch(path, pattern) or fnmatch(path, pattern.replace("/**", "/*"))
+                for pattern in self.skip_paths
+            )
+            for path in paths
         )
 
     def model_for(
@@ -136,6 +168,7 @@ def load_config(path: Path) -> Config:
         model_high_risk=raw.get("model_high_risk", ""),
         high_risk_paths=tuple(raw.get("high_risk_paths") or ()),
         high_risk_content=tuple(raw.get("high_risk_content") or ()),
+        skip_paths=tuple(raw.get("skip_paths") or ()),
         limits=Limits(
             max_files=limits_raw.get("max_files", defaults.max_files),
             max_changed_lines=limits_raw.get("max_changed_lines", defaults.max_changed_lines),

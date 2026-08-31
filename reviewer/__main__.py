@@ -79,6 +79,20 @@ def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int, 
         print(f"AI review: техническая ошибка при получении диффа: {_describe(exc)}", file=sys.stderr)
         return EXIT_TECHNICAL
 
+    # Отмена до первого обращения к модели. Здесь, а не в rules: CI-шаблона:
+    # changes: в GitLab умеет только «запустить, если задет один из этих путей»,
+    # то есть потребовал бы перечислить ВСЕ кодовые пути каждого репозитория —
+    # и молча пропускал бы ревью для расширения, которое забыли внести. Список
+    # того, что ревьюировать не надо, ошибается в безопасную сторону: незнакомый
+    # файл в него не попадает и ревью получает.
+    if config.is_review_pointless(mr.changed_files):
+        print(
+            f"AI review: пропущено, изменены только {', '.join(mr.changed_files)} — "
+            "ни один файл не требует ревью (skip_paths в .ai-review.yml)",
+            file=sys.stderr,
+        )
+        return EXIT_CLEAN
+
     try:
         claude_md = (repo / "CLAUDE.md").read_text(encoding="utf-8") if (repo / "CLAUDE.md").exists() else ""
         findings = list(run_deterministic(repo, mr.changed_files))
