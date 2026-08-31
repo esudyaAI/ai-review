@@ -229,3 +229,21 @@ def test_an_empty_diff_is_not_a_skip():
 
 def test_nothing_is_skipped_without_the_setting():
     assert not _config().is_review_pointless(("README.md",))
+
+
+# Ревью !25 отметило замену `/**` -> `/*` как потерю рекурсивного смысла.
+# Замерено — не так: fnmatch не уважает границы сегментов, его `*` матчит и
+# слэши, поэтому обе формы ведут себя одинаково на любой глубине.
+#
+#     fnmatch("docs/a/b/deep.md", "docs/**")  -> True
+#     fnmatch("docs/a/b/deep.md", "docs/*")   -> True
+#
+# Тест стоит здесь, чтобы этот вопрос не выясняли заново, и чтобы переход на
+# матчер с настоящей семантикой ** (pathlib, wcmatch) не проехал молча: с ним
+# `docs/*` перестанет ловить вложенные файлы, и это упадёт здесь.
+def test_deep_paths_are_matched_by_both_glob_forms():
+    for pattern in ("docs/**", "docs/*"):
+        config = _config(skip_paths=(pattern,))
+        assert config.is_review_pointless(("docs/a/b/deep.md",)), pattern
+        assert config.is_review_pointless(("docs/api.md",)), pattern
+        assert not config.is_review_pointless(("internal/api/handler.go",)), pattern
