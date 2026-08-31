@@ -112,3 +112,90 @@ def test_split_by_risk_is_a_no_op_without_a_distinct_strong_model():
     assert _config(model_high_risk="mini").split_by_risk(("internal/service/auth_a.go", "b.go")) == (
         (), ("internal/service/auth_a.go", "b.go"),
     )
+
+
+# Файл бывает опасен не тем, где он лежит, а тем, что в нём написано.
+#
+# У jobbytime-go в high_risk_paths стоял `migrations/*`, и на дорогую модель
+# уходила ЛЮБАЯ миграция. Замер 31.08: 20260831010000 добавляла одну колонку
+# (`ADD COLUMN IF NOT EXISTS location text`) и стоила $0.1258 против $0.03 на
+# базовой модели.
+#
+# Опасна не миграция, а сужение схемы: DROP COLUMN, RENAME, SET NOT NULL,
+# ALTER COLUMN ... TYPE, DELETE FROM, TRUNCATE. Добавление колонки не ломает
+# ни одного читателя, и у go для него уже есть отдельный гейт
+# (scripts/migration-shape-gate.sh), различающий additive и narrowing строже,
+# чем это сделала бы модель.
+def _content_config(**overrides):
+    data = dict(
+        high_risk_paths=("internal/service/auth_*",),
+        high_risk_content=(r"DROP\s+COLUMN", r"TRUNCATE\s"),
+    )
+    data.update(overrides)
+    return _config(**data)
+
+
+def test_path_alone_still_escalates():
+    assert _content_config().is_high_risk("internal/service/auth_token.go")
+
+
+def test_content_escalates_a_path_outside_the_list():
+    assert _content_config().is_high_risk(
+        "migrations/new/20260901_drop.sql",
+        content="ALTER TABLE public.vacancies DROP COLUMN posted_date;",
+    )
+
+
+# Тот самый случай, который и оплачивался лишним.
+def test_additive_migration_stays_on_the_cheap_model():
+    assert not _content_config().is_high_risk(
+        "migrations/new/20260831010000_vacancy_ingest_location.sql",
+        content="ALTER TABLE public.vacancy_ingest\n"
+                "    ADD COLUMN IF NOT EXISTS location text;",
+    )
+
+
+def test_content_is_matched_case_insensitively():
+    assert _content_config().is_high_risk(
+        "migrations/new/x.sql", content="alter table t drop column c;")
+
+
+# Содержимое бывает недоступно: файл удалён, чтение упало. Тогда решает путь.
+# Считать такой файл безопасным молча нельзя — дыра оказалась бы ровно там,
+# где её труднее всего заметить.
+def test_unavailable_content_falls_back_to_the_path():
+    config = _content_config()
+    assert config.is_high_risk("internal/service/auth_x.go", content=None)
+    assert not config.is_high_risk("internal/models/vacancy.go", content=None)
+
+
+# Репозиторий, не задавший high_risk_content, работает как раньше.
+def test_no_content_patterns_means_paths_decide_alone():
+    assert not _content_config(high_risk_content=()).is_high_risk(
+        "migrations/new/x.sql", content="DROP COLUMN c;")
+
+
+def test_split_by_risk_reads_content_when_a_reader_is_given():
+    contents = {
+        "migrations/new/add.sql": "ADD COLUMN IF NOT EXISTS x text;",
+        "migrations/new/drop.sql": "DROP COLUMN y;",
+    }
+    high, rest = _content_config().split_by_risk(
+        list(contents), read_content=contents.get)
+    assert high == ("migrations/new/drop.sql",)
+    assert rest == ("migrations/new/add.sql",)
+
+
+# Без читателя деление остаётся тем же, что было до этой правки: только пути.
+def test_split_by_risk_without_a_reader_ignores_content():
+    high, rest = _content_config().split_by_risk(("migrations/new/drop.sql",))
+    assert high == ()
+    assert rest == ("migrations/new/drop.sql",)
+
+
+# model_for отвечает на тот же вопрос одним словом и обязан отвечать так же.
+def test_model_for_agrees_with_is_high_risk_on_content():
+    config = _content_config()
+    contents = {"migrations/new/drop.sql": "DROP COLUMN y;"}
+    assert config.model_for(list(contents), read_content=contents.get) == "strong"
+    assert config.model_for(("migrations/new/drop.sql",)) == "mini"

@@ -543,3 +543,56 @@ def test_main_prints_the_outcome_line_on_a_startup_failure(tmp_path, monkeypatch
     assert code == EXIT_TECHNICAL
     captured = capsys.readouterr()
     assert "AI review: итог" in (captured.out + captured.err)
+
+
+def _migration_mr():
+    return MergeRequestDiff(
+        base_sha="b" * 40, head_sha="h" * 40, start_sha="s" * 40,
+        files=(
+            FileDiff("migrations/new/1_add.sql", "migrations/new/1_add.sql",
+                     "@@ -0,0 +1,1 @@\n+ALTER TABLE t ADD COLUMN IF NOT EXISTS c text;\n", (1,)),
+            FileDiff("migrations/new/2_drop.sql", "migrations/new/2_drop.sql",
+                     "@@ -0,0 +1,1 @@\n+ALTER TABLE t DROP COLUMN c;\n", (1,)),
+        ),
+    )
+
+
+# Деление по содержимому должно быть ПРОВЕДЕНО до модели, а не просто существовать
+# в Config. Тесты config.py проверяют правило; здесь проверяется, что review()
+# действительно читает файлы и передаёт читателя в split_by_risk.
+#
+# Написан после мутации: убрать read_content из вызова в __main__ — и все 282
+# теста оставались зелёными. Ровно тот же промах, что был у раннера матчера,
+# где схлопывание городов перестало вызываться, а тест звал функцию напрямую.
+def test_migration_content_decides_the_model_not_just_the_path(tmp_path):
+    (tmp_path / "migrations" / "new").mkdir(parents=True)
+    (tmp_path / "migrations/new/1_add.sql").write_text(
+        "ALTER TABLE t ADD COLUMN IF NOT EXISTS c text;\n", encoding="utf-8")
+    (tmp_path / "migrations/new/2_drop.sql").write_text(
+        "ALTER TABLE t DROP COLUMN c;\n", encoding="utf-8")
+
+    config = make_config(model="mini", model_high_risk="strong",
+                         high_risk_paths=(), high_risk_content=(r"DROP\s+COLUMN",))
+    factory = RecordingReviewerFactory()
+
+    review(config, tmp_path, FakeClient(_migration_mr()), factory, lambda d: None, mr_iid=7)
+
+    assert dict(factory.calls) == {
+        "strong": ("migrations/new/2_drop.sql",),
+        "mini": ("migrations/new/1_add.sql",),
+    }
+
+
+# Файл из диффа может отсутствовать в дереве — удалён этим же MR. Читать нечего,
+# и это не повод считать его безопасным: решает путь, как раньше.
+def test_a_deleted_file_falls_back_to_the_path_rule(tmp_path):
+    config = make_config(model="mini", model_high_risk="strong",
+                         high_risk_paths=("migrations/*",),
+                         high_risk_content=(r"DROP\s+COLUMN",))
+    factory = RecordingReviewerFactory()
+
+    review(config, tmp_path, FakeClient(_migration_mr()), factory, lambda d: None, mr_iid=7)
+
+    assert dict(factory.calls) == {
+        "strong": ("migrations/new/1_add.sql", "migrations/new/2_drop.sql"),
+    }
