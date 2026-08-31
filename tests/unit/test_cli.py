@@ -557,6 +557,16 @@ def _migration_mr():
     )
 
 
+def _docs_mr():
+    return MergeRequestDiff(
+        base_sha="b" * 40, head_sha="h" * 40, start_sha="s" * 40,
+        files=(
+            FileDiff("README.md", "README.md", "@@ -1,1 +1,2 @@\n x\n+y\n", (2,)),
+            FileDiff("docs/api.md", "docs/api.md", "@@ -1,1 +1,2 @@\n x\n+y\n", (2,)),
+        ),
+    )
+
+
 # Деление по содержимому должно быть ПРОВЕДЕНО до модели, а не просто существовать
 # в Config. Тесты config.py проверяют правило; здесь проверяется, что review()
 # действительно читает файлы и передаёт читателя в split_by_risk.
@@ -596,3 +606,32 @@ def test_a_deleted_file_falls_back_to_the_path_rule(tmp_path):
     assert dict(factory.calls) == {
         "strong": ("migrations/new/1_add.sql", "migrations/new/2_drop.sql"),
     }
+# Проверяется ПРОВОДКА, а не правило: модель не должна быть вызвана ни разу.
+# Признак отбора — пустой список вызовов фабрики, и его подмена изменить не может.
+def test_a_docs_only_diff_never_reaches_the_model(tmp_path):
+    config = make_config(skip_paths=("*.md", "docs/**"))
+    factory = RecordingReviewerFactory()
+
+    code = review(config, tmp_path, FakeClient(_docs_mr()), factory, lambda d: None, mr_iid=7)
+
+    assert factory.calls == []
+    assert code == 0
+
+
+def test_one_code_file_brings_the_model_back(tmp_path):
+    mr = MergeRequestDiff(
+        base_sha="b" * 40, head_sha="h" * 40, start_sha="s" * 40,
+        files=(
+            FileDiff("README.md", "README.md", "@@ -1,1 +1,2 @@\n x\n+y\n", (2,)),
+            FileDiff("a.go", "a.go", "@@ -1,1 +1,2 @@\n x\n+y\n", (2,)),
+        ),
+    )
+    config = make_config(skip_paths=("*.md",))
+    factory = RecordingReviewerFactory()
+
+    review(config, tmp_path, FakeClient(mr), factory, lambda d: None, mr_iid=7)
+
+    # Оба файла: пропускается прогон целиком или не пропускается вовсе.
+    # Выбрасывать .md из диффа с кодом нельзя — README нередко и есть то место,
+    # где видно, что изменение описано неверно.
+    assert factory.calls == [("m", ("README.md", "a.go"))]
