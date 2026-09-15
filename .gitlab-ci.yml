@@ -53,6 +53,28 @@ test:
     - pip install -e ".[dev]"
     - python -m pytest -v
 
+# Та же сюита на нижней объявленной версии Python.
+#
+# requires-python в pyproject.toml был утверждением, которое ничто не проверяло,
+# и оно разошлось с фактом: стояло ">=3.12", при том что весь пакет собирается и
+# все тесты проходят на 3.10. Разошлось не в безопасную сторону - соседние
+# Python-проекты (матчер, infra) живут на 3.11, и объявленный пол выше их
+# означал бы, что общий код нельзя переиспользовать, хотя технически можно.
+#
+# Образ здесь и floor в pyproject связаны тестом tests/unit/test_python_floor.py:
+# два места, названные руками, разъезжаются - это и есть тот дефект, который
+# джоба закрывает.
+test_floor:
+  stage: test
+  image: python:3.11-slim
+  interruptible: true
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'
+  script:
+    - pip install -e ".[dev]"
+    - python -m pytest -q
+
 build_image:
   stage: build
   image: docker:27
