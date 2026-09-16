@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from reviewer.findings import is_bot_note
+from reviewer.findings import is_bot_note, strip_reads_marker
 from reviewer.gitlab_client import Discussion
 from reviewer.llm.base import LLMProvider
 
@@ -44,7 +44,7 @@ def adjudicate(provider: LLMProvider, discussion: Discussion) -> Verdict:
     if not discussion.has_human_reply:
         raise ValueError("discussion has no human reply to adjudicate")
 
-    original = discussion.notes[0].body
+    original = strip_reads_marker(discussion.notes[0].body)
     # Filter replies to include only human-authored notes (those without our marker).
     # This excludes any bot follow-ups that may appear in the discussion thread.
     human_replies = [note for note in discussion.notes[1:] if not is_bot_note(note.body)]

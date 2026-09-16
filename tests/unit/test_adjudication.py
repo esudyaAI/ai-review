@@ -98,3 +98,16 @@ def test_only_human_replies_without_marker_are_sent_to_model():
     assert "Second human reply" in conversation
     # Bot follow-up should NOT be in the prompt
     assert "Bot follow-up" not in conversation
+
+
+def test_read_record_is_not_sent_to_the_adjudicator():
+    # The record exists to measure the reviewer, not to argue with the author: the
+    # adjudicator's input stays what it was before the record was added.
+    body = ("**[bug] Ошибка не проверяется**\n\n<!-- ai-review:fp=0123456789abcdef;file=a.go -->"
+            "\n<!-- ai-review:reads v=1;read=a.go:1-200;grep=;list= -->")
+    discussion = Discussion(id="d1", notes=(Note(id=1, body=body), DISCUSSION.notes[1]), resolved=False)
+    provider = OneShotProvider(verdict_response(False, "нет"))
+    adjudicate(provider, discussion)
+    content = provider.messages[1]["content"]
+    assert "ai-review:reads" not in content
+    assert "ai-review:fp=0123456789abcdef" in content

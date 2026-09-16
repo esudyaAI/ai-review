@@ -635,3 +635,38 @@ def test_one_code_file_brings_the_model_back(tmp_path):
     # Выбрасывать .md из диффа с кодом нельзя — README нередко и есть то место,
     # где видно, что изменение описано неверно.
     assert factory.calls == [("m", ("README.md", "a.go"))]
+
+
+# --- Read record in the job log -------------------------------------------------
+# The thread keeps the record of a published finding. A finding that is dropped
+# before publication (outside the diff, low confidence) reaches no thread, so the
+# log is its only trace; one line per finding, keyed by fingerprint.
+from reviewer.reads import Read  # noqa: E402
+
+
+def test_every_llm_finding_logs_its_read_record_even_when_dropped(tmp_path, capsys):
+    import dataclasses
+    kept = dataclasses.replace(finding(), reads=(Read("read_file", "a.go", 1, 3),))
+    low = dataclasses.replace(finding(), file="b.go", confidence="low", reads=())
+    review(make_config(), tmp_path, FakeClient(make_mr()), lambda model: FakeReviewer([kept, low]),
+           lambda d: None, mr_iid=7)
+    out = capsys.readouterr().out
+    assert f"AI review: чтения находки fp={kept.fingerprint} [bug] a.go:2 — v=1;read=a.go:1-3;grep=;list=" in out
+    assert f"AI review: чтения находки fp={low.fingerprint} [bug] b.go:2 — v=1;read=;grep=;list=" in out
+
+
+def test_finding_without_a_record_logs_no_read_line(tmp_path, capsys):
+    review(make_config(), tmp_path, FakeClient(make_mr()), lambda model: FakeReviewer([finding()]),
+           lambda d: None, mr_iid=7)
+    assert "чтения находки" not in capsys.readouterr().out
+
+
+def test_log_keeps_the_full_record_even_when_the_thread_copy_is_bounded(tmp_path, capsys):
+    import dataclasses
+    reads = tuple(Read("grep", f"pkg{i:04d}/file_with_a_long_name_{i:04d}.go", 7, 7) for i in range(3000))
+    big = dataclasses.replace(finding(), reads=reads)
+    review(make_config(), tmp_path, FakeClient(make_mr()), lambda model: FakeReviewer([big]),
+           lambda d: None, mr_iid=7)
+    out = capsys.readouterr().out
+    assert "pkg2999/file_with_a_long_name_2999.go:7" in out
+    assert "grep_dropped" not in out

@@ -26,6 +26,7 @@ from reviewer.llm.usage import (
     report_lines,
 )
 from reviewer.prompt_builder import build_system_prompt, build_user_prompt
+from reviewer.reads import encode_marker
 from reviewer.testlayout import describe_test_layout, detect_test_globs
 from reviewer.tools import RepoTools
 
@@ -139,6 +140,13 @@ def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int, 
     except Exception as exc:  # noqa: BLE001
         print(f"AI review: техническая ошибка ревью: {_describe(exc)}", file=sys.stderr)
         return EXIT_TECHNICAL
+
+    # One line per model finding, before any filtering: a finding dropped below
+    # never reaches a thread, and this line is then its only record.
+    for finding in findings:
+        if finding.reads is not None:
+            print(f"AI review: чтения находки fp={finding.fingerprint} [{finding.category}] "
+                  f"{finding.file}:{finding.line_start} — {encode_marker(finding.reads)}")
 
     blocking = keep_blocking(findings)
 

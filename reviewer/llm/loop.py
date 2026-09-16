@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from reviewer.findings import (
     SUBMIT_FINDINGS_TOOL,
@@ -12,6 +12,7 @@ from reviewer.findings import (
     parse_findings,
 )
 from reviewer.llm.base import LLMProvider, ToolCall
+from reviewer.reads import Read, reads_from_call
 from reviewer.tools import TOOL_SCHEMAS, RepoTools, ToolError
 
 MAX_SCHEMA_RETRIES = 1
@@ -63,6 +64,7 @@ class ReviewLoop:
         self._tools = tools
         self._max_iterations = max_iterations
         self.stats = LoopStats()
+        self._reads: list[Read] = []
 
     def run(self, system_prompt: str, user_prompt: str) -> list[Finding]:
         messages: list[dict] = [
@@ -74,6 +76,7 @@ class ReviewLoop:
         text_reminders = 0
         investigation_reminders = 0
         investigation_calls = 0
+        self._reads = []
 
         for _ in range(self._max_iterations):
             # Counted after the answer, not before it: a provider error would
@@ -113,7 +116,9 @@ class ReviewLoop:
                     continue
 
                 try:
-                    return parse_findings(submit.arguments)
+                    findings = parse_findings(submit.arguments)
+                    reads = tuple(self._reads)
+                    return [replace(finding, reads=reads) for finding in findings]
                 except FindingsSchemaError as exc:
                     if schema_retries >= MAX_SCHEMA_RETRIES:
                         raise ReviewIncomplete(f"submit_findings stayed invalid: {exc}") from exc
@@ -140,7 +145,9 @@ class ReviewLoop:
         if call.name in INVESTIGATION_TOOL_NAMES:
             self.stats.tool_calls += 1
         try:
-            result = self._tools.dispatch(call.name, call.arguments) or "(empty result)"
+            raw = self._tools.dispatch(call.name, call.arguments)
+            self._reads.extend(reads_from_call(call.name, call.arguments, raw or ""))
+            result = raw or "(empty result)"
             # read_file/grep/list_files can return arbitrary repository content - the
             # largest prompt-injection surface, since the model chooses what to read.
             # Wrap it as data, same as the diff and CLAUDE.md, so it's never mistaken

@@ -179,3 +179,75 @@ def test_marker_written_before_the_line_existed_is_still_readable():
     old = "<!-- ai-review:fp=0123456789abcdef;file=a.go;cat=tests -->"
     assert extract_marker(old) == ("0123456789abcdef", "a.go", "tests", None)
 
+
+
+# --- The read record in the published comment ------------------------------------
+from reviewer.reads import Read  # noqa: E402
+
+
+def test_llm_finding_comment_carries_a_hidden_read_record():
+    finding = make_finding(reads=(Read("read_file", "ci/.gitlab-ci.yml", 1, 200),))
+    body = render_comment(finding)
+    assert "<!-- ai-review:reads v=1;read=ci/.gitlab-ci.yml:1-200;grep=;list= -->" in body
+
+
+def test_empty_read_record_is_published_not_omitted():
+    body = render_comment(make_finding(reads=()))
+    assert "<!-- ai-review:reads v=1;read=;grep=;list= -->" in body
+
+
+def test_finding_without_a_record_publishes_no_read_marker():
+    # Deterministic findings are not formed by reading; "no record" must not be
+    # confused with "read nothing".
+    assert "ai-review:reads" not in render_comment(make_finding())
+
+
+def test_read_record_does_not_disturb_the_thread_marker():
+    plain = extract_marker(render_comment(make_finding()))
+    with_reads = extract_marker(render_comment(make_finding(reads=(Read("grep", "a;b=c.go", 1, 1),))))
+    assert plain == with_reads
+
+
+def test_read_record_does_not_change_identity_or_equality():
+    base = make_finding()
+    recorded = make_finding(reads=(Read("read_file", "a.go", 1, 2),))
+    assert base.fingerprint == recorded.fingerprint
+    assert base == recorded
+
+
+def test_thread_copy_of_the_read_record_is_bounded():
+    from reviewer.reads import MAX_THREAD_MARKER_BYTES
+    reads = tuple(Read("grep", f"pkg{i:04d}/file_with_a_long_name_{i:04d}.go", 1, 1) for i in range(3000))
+    body = render_comment(make_finding(reads=reads))
+    marker = body[body.index("<!-- ai-review:reads "):]
+    assert len(marker.encode()) < MAX_THREAD_MARKER_BYTES + 40
+    assert "grep_dropped=" in marker
+
+
+# The first real run of this reviewer on its own merge request (!28) found that the
+# stripping pattern was too loose. Its stated mechanism - eating an adjacent comment -
+# does not happen ([^>] stops at the first '>'); these two do.
+from reviewer.findings import strip_reads_marker  # noqa: E402
+
+
+def test_stripping_leaves_a_marker_quoted_inside_the_finding_text_alone():
+    text = "_Предлагаемая правка:_ удалять только `<!-- ai-review:reads ... -->` маркер"
+    assert strip_reads_marker(text) == text
+
+
+def test_stripping_an_unterminated_lookalike_does_not_eat_the_text_after_it():
+    body = "text <!-- ai-review:reads broken\nmore text\n<!-- ai-review:fp=0123456789abcdef;file=a.go -->\nend"
+    assert strip_reads_marker(body) == body
+
+
+def test_stripping_removes_exactly_the_generated_marker_and_nothing_next_to_it():
+    body = render_comment(make_finding(reads=(Read("grep", "a b;c.go", 1, 1),))) + "\n<!-- other -->\ntail"
+    stripped = strip_reads_marker(body)
+    assert "ai-review:reads" not in stripped
+    assert stripped.endswith("-->\n<!-- other -->\ntail")
+    assert stripped == render_comment(make_finding()) + "\n<!-- other -->\ntail"
+
+
+def test_stripping_a_lookalike_with_a_version_but_foreign_characters_changes_nothing():
+    body = "см. <!-- ai-review:reads v=1;read=a b\nи дальше текст\n<!-- ai-review:fp=0123456789abcdef;file=a.go -->"
+    assert strip_reads_marker(body) == body
