@@ -179,3 +179,37 @@ def test_marker_written_before_the_line_existed_is_still_readable():
     old = "<!-- ai-review:fp=0123456789abcdef;file=a.go;cat=tests -->"
     assert extract_marker(old) == ("0123456789abcdef", "a.go", "tests", None)
 
+
+
+# --- The read record in the published comment ------------------------------------
+from reviewer.reads import Read  # noqa: E402
+
+
+def test_llm_finding_comment_carries_a_hidden_read_record():
+    finding = make_finding(reads=(Read("read_file", "ci/.gitlab-ci.yml", 1, 200),))
+    body = render_comment(finding)
+    assert "<!-- ai-review:reads v=1;read=ci/.gitlab-ci.yml:1-200;grep=;list= -->" in body
+
+
+def test_empty_read_record_is_published_not_omitted():
+    body = render_comment(make_finding(reads=()))
+    assert "<!-- ai-review:reads v=1;read=;grep=;list= -->" in body
+
+
+def test_finding_without_a_record_publishes_no_read_marker():
+    # Deterministic findings are not formed by reading; "no record" must not be
+    # confused with "read nothing".
+    assert "ai-review:reads" not in render_comment(make_finding())
+
+
+def test_read_record_does_not_disturb_the_thread_marker():
+    plain = extract_marker(render_comment(make_finding()))
+    with_reads = extract_marker(render_comment(make_finding(reads=(Read("grep", "a;b=c.go", 1, 1),))))
+    assert plain == with_reads
+
+
+def test_read_record_does_not_change_identity_or_equality():
+    base = make_finding()
+    recorded = make_finding(reads=(Read("read_file", "a.go", 1, 2),))
+    assert base.fingerprint == recorded.fingerprint
+    assert base == recorded

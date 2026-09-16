@@ -386,3 +386,110 @@ def test_iteration_is_counted_only_after_the_model_answered(tmp_path):
         loop.run("system", "user")
 
     assert loop.stats.iterations == 1
+
+
+# --- What each finding was formed on --------------------------------------------
+# Findings are submitted all at once, so the runtime cannot know which read served
+# which finding. What it can record as fact is everything this pass read before the
+# verdict, attached to every finding of the pass. The model is not asked to list its
+# reads: that would be a claim, and it would change the prompt in the very period
+# when the effect of !26 is being measured.
+
+from reviewer.reads import Read  # noqa: E402
+
+
+def read_file_call(call_id, path, **extra):
+    return ProviderResponse(
+        tool_calls=(ToolCall(id=call_id, name="read_file", arguments={"path": path, **extra}),),
+        text=None,
+    )
+
+
+def grep_call(call_id, pattern):
+    return ProviderResponse(
+        tool_calls=(ToolCall(id=call_id, name="grep", arguments={"pattern": pattern}),),
+        text=None,
+    )
+
+
+def test_findings_carry_what_the_pass_read_before_the_verdict(tools):
+    provider = ScriptedProvider([
+        read_file_call("r1", "internal/billing.go"),
+        grep_call("r2", "package"),
+        list_files_call("r3"),
+        submit_call([VALID_FINDING]),
+    ])
+    findings = ReviewLoop(provider, tools).run("system", "user")
+    assert findings[0].reads == (
+        Read("read_file", "internal/billing.go", 1, 1),
+        Read("grep", "internal/billing.go", 1, 1),
+        Read("list_files", "**/*", None, None),
+    )
+
+
+def test_a_refused_read_is_not_recorded_as_read(tools, tmp_path):
+    (tmp_path / ".env").write_text("SECRET=x\n", encoding="utf-8")
+    provider = ScriptedProvider([
+        read_file_call("r1", ".env"),
+        read_file_call("r2", "missing.go"),
+        list_files_call("r3"),
+        list_files_call("r4"),
+        submit_call([VALID_FINDING]),
+    ])
+    findings = ReviewLoop(provider, tools).run("system", "user")
+    assert [r.path for r in findings[0].reads] == ["**/*", "**/*"]
+
+
+def test_reads_served_alongside_a_premature_submit_count(tools):
+    # The reminder branch serves the other calls of the same response; the model
+    # saw their results before its accepted verdict, so they are part of the record.
+    premature = ProviderResponse(
+        tool_calls=(
+            ToolCall(id="r1", name="read_file", arguments={"path": "internal/billing.go"}),
+            ToolCall(id="s1", name="submit_findings", arguments={"summary": "", "findings": []}),
+        ),
+        text=None,
+    )
+    provider = ScriptedProvider([
+        premature, list_files_call("r2"), list_files_call("r3"), submit_call([VALID_FINDING]),
+    ])
+    findings = ReviewLoop(provider, tools).run("system", "user")
+    assert Read("read_file", "internal/billing.go", 1, 1) in findings[0].reads
+
+
+def test_calls_sent_together_with_the_accepted_verdict_were_never_seen(tools):
+    provider = ScriptedProvider([
+        list_files_call("r1"), list_files_call("r2"), list_files_call("r3"),
+        ProviderResponse(
+            tool_calls=(
+                ToolCall(id="r4", name="read_file", arguments={"path": "internal/billing.go"}),
+                ToolCall(id="s1", name="submit_findings",
+                         arguments={"summary": "", "findings": [VALID_FINDING]}),
+            ),
+            text=None,
+        ),
+    ])
+    findings = ReviewLoop(provider, tools).run("system", "user")
+    assert all(r.tool == "list_files" for r in findings[0].reads)
+
+
+def test_a_pass_that_read_nothing_attaches_an_empty_record_not_none(tools):
+    provider = ScriptedProvider([
+        submit_call([VALID_FINDING], "s1"),
+        submit_call([VALID_FINDING], "s2"),
+        submit_call([VALID_FINDING], "s3"),
+    ])
+    findings = ReviewLoop(provider, tools).run("system", "user")
+    assert findings[0].reads == ()
+
+
+def test_a_second_run_of_the_same_loop_does_not_inherit_the_first_runs_reads(tools):
+    loop = ReviewLoop(ScriptedProvider([
+        read_file_call("a1", "internal/billing.go"), list_files_call("a2"), list_files_call("a3"),
+        submit_call([]),
+        list_files_call("b1"), list_files_call("b2"), list_files_call("b3"),
+        submit_call([VALID_FINDING]),
+    ]), tools)
+    loop.run("system", "user")
+    findings = loop.run("system", "user")
+    assert all(r.tool == "list_files" for r in findings[0].reads)

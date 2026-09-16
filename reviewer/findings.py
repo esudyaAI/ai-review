@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterable
+
+from reviewer.reads import Read, encode_marker
 
 CATEGORIES = frozenset({"bug", "security", "tests", "rules", "architecture"})
 CONFIDENCES = frozenset({"high", "medium", "low"})
@@ -36,6 +38,12 @@ class Finding:
     suggested_fix: str
     confidence: str
     source: str = "llm"
+    # What the pass that produced this finding read before its verdict. None means
+    # "no record" (a deterministic finding, not formed by reading); an empty tuple
+    # means the pass read nothing, which is the record most worth keeping.
+    # Excluded from equality: it describes how the finding was formed, not which
+    # finding it is.
+    reads: tuple[Read, ...] | None = field(default=None, compare=False)
 
     @property
     def line_bucket(self) -> int:
@@ -64,7 +72,25 @@ def render_comment(finding: Finding) -> str:
         f"следующий прогон его учтёт.</sub>\n"
         f"<!-- ai-review:fp={finding.fingerprint};file={finding.file}"
         f";cat={finding.category};line={finding.line_start} -->"
+        + _reads_marker(finding)
     )
+
+
+def _reads_marker(finding: Finding) -> str:
+    """Hidden in the rendered thread, kept with it - and with the outcome of any
+    dispute on it - for measuring whether claims were formed on what was read."""
+    if finding.reads is None:
+        return ""
+    return f"\n<!-- ai-review:reads {encode_marker(finding.reads)} -->"
+
+
+READS_MARKER_RE = re.compile(r"\n?<!--\s*ai-review:reads\s[^>]*-->")
+
+
+def strip_reads_marker(body: str) -> str:
+    """The comment without its read record - for consumers that must see the
+    finding exactly as it was before the record existed."""
+    return READS_MARKER_RE.sub("", body)
 
 
 def extract_marker(body: str) -> tuple[str, str, str | None, int | None] | None:

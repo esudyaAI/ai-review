@@ -635,3 +635,27 @@ def test_one_code_file_brings_the_model_back(tmp_path):
     # Выбрасывать .md из диффа с кодом нельзя — README нередко и есть то место,
     # где видно, что изменение описано неверно.
     assert factory.calls == [("m", ("README.md", "a.go"))]
+
+
+# --- Read record in the job log -------------------------------------------------
+# The thread keeps the record of a published finding. A finding that is dropped
+# before publication (outside the diff, low confidence) reaches no thread, so the
+# log is its only trace; one line per finding, keyed by fingerprint.
+from reviewer.reads import Read  # noqa: E402
+
+
+def test_every_llm_finding_logs_its_read_record_even_when_dropped(tmp_path, capsys):
+    import dataclasses
+    kept = dataclasses.replace(finding(), reads=(Read("read_file", "a.go", 1, 3),))
+    low = dataclasses.replace(finding(), file="b.go", confidence="low", reads=())
+    review(make_config(), tmp_path, FakeClient(make_mr()), lambda model: FakeReviewer([kept, low]),
+           lambda d: None, mr_iid=7)
+    out = capsys.readouterr().out
+    assert f"AI review: чтения находки fp={kept.fingerprint} [bug] a.go:2 — v=1;read=a.go:1-3;grep=;list=" in out
+    assert f"AI review: чтения находки fp={low.fingerprint} [bug] b.go:2 — v=1;read=;grep=;list=" in out
+
+
+def test_finding_without_a_record_logs_no_read_line(tmp_path, capsys):
+    review(make_config(), tmp_path, FakeClient(make_mr()), lambda model: FakeReviewer([finding()]),
+           lambda d: None, mr_iid=7)
+    assert "чтения находки" not in capsys.readouterr().out
