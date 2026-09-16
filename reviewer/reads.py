@@ -14,6 +14,15 @@ from urllib.parse import quote, unquote
 
 MARKER_VERSION = "1"
 
+# The published record exactly as encode_marker writes it and nothing else: fixed
+# prefix, `v=` first, then fields made only of characters `quote` can emit plus the
+# separators. A marker quoted inside finding text ("`<!-- ai-review:reads ... -->`")
+# or an unterminated lookalike does not match, so neither stripping nor parsing
+# can reach into the text around it. Found by the reviewer's first run on !28.
+MARKER_RE = re.compile(
+    r"\n?<!-- ai-review:reads (v=\d+(?:;[a-z_]+=[A-Za-z0-9%/._~,|:-]*)*) -->"
+)
+
 # `path:line:text` as produced by RepoTools.grep. The path is matched lazily, so a
 # colon in the matched text never leaks into it. A path that itself contains
 # `:<digits>:` would be split early - such paths do not occur in the reviewed repos.

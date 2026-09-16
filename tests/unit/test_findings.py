@@ -222,3 +222,32 @@ def test_thread_copy_of_the_read_record_is_bounded():
     marker = body[body.index("<!-- ai-review:reads "):]
     assert len(marker.encode()) < MAX_THREAD_MARKER_BYTES + 40
     assert "grep_dropped=" in marker
+
+
+# The first real run of this reviewer on its own merge request (!28) found that the
+# stripping pattern was too loose. Its stated mechanism - eating an adjacent comment -
+# does not happen ([^>] stops at the first '>'); these two do.
+from reviewer.findings import strip_reads_marker  # noqa: E402
+
+
+def test_stripping_leaves_a_marker_quoted_inside_the_finding_text_alone():
+    text = "_Предлагаемая правка:_ удалять только `<!-- ai-review:reads ... -->` маркер"
+    assert strip_reads_marker(text) == text
+
+
+def test_stripping_an_unterminated_lookalike_does_not_eat_the_text_after_it():
+    body = "text <!-- ai-review:reads broken\nmore text\n<!-- ai-review:fp=0123456789abcdef;file=a.go -->\nend"
+    assert strip_reads_marker(body) == body
+
+
+def test_stripping_removes_exactly_the_generated_marker_and_nothing_next_to_it():
+    body = render_comment(make_finding(reads=(Read("grep", "a b;c.go", 1, 1),))) + "\n<!-- other -->\ntail"
+    stripped = strip_reads_marker(body)
+    assert "ai-review:reads" not in stripped
+    assert stripped.endswith("-->\n<!-- other -->\ntail")
+    assert stripped == render_comment(make_finding()) + "\n<!-- other -->\ntail"
+
+
+def test_stripping_a_lookalike_with_a_version_but_foreign_characters_changes_nothing():
+    body = "см. <!-- ai-review:reads v=1;read=a b\nи дальше текст\n<!-- ai-review:fp=0123456789abcdef;file=a.go -->"
+    assert strip_reads_marker(body) == body

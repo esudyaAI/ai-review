@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Iterable
 
+from reviewer.reads import MARKER_RE as READS_MARKER_RE
 from reviewer.reads import MAX_THREAD_MARKER_BYTES, Read, encode_marker
 
 CATEGORIES = frozenset({"bug", "security", "tests", "rules", "architecture"})
@@ -85,7 +86,6 @@ def _reads_marker(finding: Finding) -> str:
     return f"\n<!-- ai-review:reads {marker} -->"
 
 
-READS_MARKER_RE = re.compile(r"\n?<!--\s*ai-review:reads\s[^>]*-->")
 
 
 def strip_reads_marker(body: str) -> str:
