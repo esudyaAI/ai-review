@@ -24,16 +24,20 @@ from reviewer.reads import MARKER_RE, decode_marker
 
 FOOTER_START = "<sub>Найдено автоматически"
 
-# Extensions of files that appear in the reviewed repositories. A token is a path
-# only if it ends in one of these: "err.Error", "т.д.", "1.2" are not paths.
-# Known blind spot: extensionless files (Dockerfile, Makefile) are not recognised.
+# A token is a path if it ends in one of these extensions ("err.Error", "т.д.",
+# "1.2" are not paths) or is one of the conventional extensionless build files,
+# optionally with a suffix (docker/Dockerfile.ci). The latter were invisible to the
+# first version - found by the reviewer's first run on !29.
 _EXTENSIONS = (
     "go|py|yml|yaml|json|toml|md|ts|tsx|js|jsx|mjs|cjs|vue|css|scss|html|sql|sh|"
     "mod|sum|txt|cfg|ini|proto|tf|lock"
 )
+_EXTENSIONLESS = "Dockerfile|Containerfile|Makefile|Jenkinsfile|Procfile|Gemfile|Vagrantfile"
 _PATH_RE = re.compile(
-    rf"(?<![\w/.-])(\.?[\w-]+(?:[./][\w-]+)*\.(?:{_EXTENSIONS}))"
-    r"(?::(\d+)(?:[-–](\d+))?)?(?![\w])"
+    r"(?<![\w/.-])("
+    rf"(?:[\w.-]+/)*(?:{_EXTENSIONLESS})(?:\.[\w-]+)?"
+    rf"|\.?[\w-]+(?:[./][\w-]+)*\.(?:{_EXTENSIONS})"
+    r")(?::(\d+)(?:[-–](\d+))?)?(?![\w])"
 )
 
 ACCEPTED = "Аргумент автора принят:"

@@ -233,3 +233,28 @@ def test_a_marker_quoted_in_the_finding_text_is_not_taken_for_the_record():
     body = render_comment(finding(problem="см. `<!-- ai-review:reads ... -->`", evidence="a.go:3"))
     row = classify_thread(thread(body), changed_files=set())
     assert row.has_record is False
+
+
+# !29's first review run: extensionless files were invisible to the measurement.
+# Not "marked unread" as the finding said - absent altogether, which undercounts.
+def test_extensionless_build_files_are_mentions():
+    body = render_comment(finding(
+        problem="Dockerfile копирует не тот каталог, ci/Makefile:12 и docker/Dockerfile.ci тоже",
+        evidence="см. Jenkinsfile",
+    ))
+    assert mentioned_paths(body) == [
+        Mention("Dockerfile", None, None),
+        Mention("ci/Makefile", 12, 12),
+        Mention("docker/Dockerfile.ci", None, None),
+        Mention("Jenkinsfile", None, None),
+    ]
+
+
+def test_extensionless_mention_is_classified_against_the_record():
+    body = render_comment(finding(evidence="Dockerfile:7", reads=(Read("read_file", "Dockerfile", 1, 40),)))
+    assert classify_thread(thread(body), changed_files=set()).statuses == {"Dockerfile:7": "read"}
+
+
+def test_words_that_merely_contain_a_build_file_name_are_not_mentions():
+    body = render_comment(finding(evidence="MakefileGenerator и myDockerfile не файлы"))
+    assert mentioned_paths(body) == []
