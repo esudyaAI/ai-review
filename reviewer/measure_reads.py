@@ -20,9 +20,8 @@ from collections import Counter
 from dataclasses import asdict, dataclass, field
 
 from reviewer.findings import extract_marker, is_bot_note
-from reviewer.reads import decode_marker
+from reviewer.reads import MARKER_RE, decode_marker
 
-READS_RE = re.compile(r"<!--\s*ai-review:reads\s([^>]*?)\s*-->")
 FOOTER_START = "<sub>Найдено автоматически"
 
 # Extensions of files that appear in the reviewed repositories. A token is a path
@@ -164,7 +163,8 @@ def classify_thread(discussion, changed_files: set[str], mr: int | None = None) 
         outcome=outcome_of(discussion),
         has_record=False,
     )
-    found = READS_RE.search(body)
+    # The generated marker only: text quoting one must not pass for a record.
+    found = MARKER_RE.search(body)
     if found is None:
         # Threads from before the record existed: no data, never "unread".
         return row

@@ -225,3 +225,11 @@ def test_unpositioned_thread_note_after_the_footer_is_not_a_mention():
     body = render_comment(finding(evidence="без путей", problem="без путей", file="ci/deploy.go"))
     body += "\n\n_(файл ci/deploy.go, строка 10 вне изменённого диффа, замечание не привязано к строке)_"
     assert mentioned_paths(body) == []
+
+
+def test_a_marker_quoted_in_the_finding_text_is_not_taken_for_the_record():
+    # Same defect as the one !28's first run found in stripping: the thread of that
+    # very finding quotes `<!-- ai-review:reads ... -->` in its suggested fix.
+    body = render_comment(finding(problem="см. `<!-- ai-review:reads ... -->`", evidence="a.go:3"))
+    row = classify_thread(thread(body), changed_files=set())
+    assert row.has_record is False
