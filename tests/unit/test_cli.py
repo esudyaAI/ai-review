@@ -659,3 +659,14 @@ def test_finding_without_a_record_logs_no_read_line(tmp_path, capsys):
     review(make_config(), tmp_path, FakeClient(make_mr()), lambda model: FakeReviewer([finding()]),
            lambda d: None, mr_iid=7)
     assert "чтения находки" not in capsys.readouterr().out
+
+
+def test_log_keeps_the_full_record_even_when_the_thread_copy_is_bounded(tmp_path, capsys):
+    import dataclasses
+    reads = tuple(Read("grep", f"pkg{i:04d}/file_with_a_long_name_{i:04d}.go", 7, 7) for i in range(3000))
+    big = dataclasses.replace(finding(), reads=reads)
+    review(make_config(), tmp_path, FakeClient(make_mr()), lambda model: FakeReviewer([big]),
+           lambda d: None, mr_iid=7)
+    out = capsys.readouterr().out
+    assert "pkg2999/file_with_a_long_name_2999.go:7" in out
+    assert "grep_dropped" not in out

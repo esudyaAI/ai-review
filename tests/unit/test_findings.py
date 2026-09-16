@@ -213,3 +213,12 @@ def test_read_record_does_not_change_identity_or_equality():
     recorded = make_finding(reads=(Read("read_file", "a.go", 1, 2),))
     assert base.fingerprint == recorded.fingerprint
     assert base == recorded
+
+
+def test_thread_copy_of_the_read_record_is_bounded():
+    from reviewer.reads import MAX_THREAD_MARKER_BYTES
+    reads = tuple(Read("grep", f"pkg{i:04d}/file_with_a_long_name_{i:04d}.go", 1, 1) for i in range(3000))
+    body = render_comment(make_finding(reads=reads))
+    marker = body[body.index("<!-- ai-review:reads "):]
+    assert len(marker.encode()) < MAX_THREAD_MARKER_BYTES + 40
+    assert "grep_dropped=" in marker

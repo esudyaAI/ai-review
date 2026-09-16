@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Iterable
 
-from reviewer.reads import Read, encode_marker
+from reviewer.reads import MAX_THREAD_MARKER_BYTES, Read, encode_marker
 
 CATEGORIES = frozenset({"bug", "security", "tests", "rules", "architecture"})
 CONFIDENCES = frozenset({"high", "medium", "low"})
@@ -81,7 +81,8 @@ def _reads_marker(finding: Finding) -> str:
     dispute on it - for measuring whether claims were formed on what was read."""
     if finding.reads is None:
         return ""
-    return f"\n<!-- ai-review:reads {encode_marker(finding.reads)} -->"
+    marker = encode_marker(finding.reads, max_bytes=MAX_THREAD_MARKER_BYTES)
+    return f"\n<!-- ai-review:reads {marker} -->"
 
 
 READS_MARKER_RE = re.compile(r"\n?<!--\s*ai-review:reads\s[^>]*-->")

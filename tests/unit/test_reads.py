@@ -89,6 +89,8 @@ def test_marker_round_trips_paths_with_separator_characters():
         "read": {"dir with space/a;b|c,d:e=f.go": [(3, 4)]},
         "grep": {"ci/.gitlab-ci.yml": [(1100, 1100)]},
         "list": ["deploy/*.yml"],
+        "grep_lines": True,
+        "grep_dropped": 0,
     }
 
 
@@ -96,3 +98,53 @@ def test_marker_can_never_close_the_html_comment_it_lives_in():
     marker = encode_marker([Read("read_file", "evil-->x.go", 1, 1), Read("list_files", "--><b>", None, None)])
     assert "-->" not in marker
     assert ">" not in marker
+
+
+# --- Size bound for the thread copy ---------------------------------------------
+# read_file and list_files are bounded by the loop's iteration limit; grep is not:
+# 100 hits per call in 100 different files, 25 times. The log keeps the full record;
+# the copy published into a thread is bounded and says exactly what it dropped.
+
+from reviewer.reads import MAX_THREAD_MARKER_BYTES  # noqa: E402
+
+
+def many_grep_hits(files, lines_per_file=1):
+    return [Read("grep", f"internal/package_{i:04d}/very_long_file_name_{i:04d}.go", n, n)
+            for i in range(files) for n in range(1, 2 * lines_per_file, 2)]
+
+
+def test_small_record_is_identical_with_or_without_the_bound():
+    reads = [Read("read_file", "a.go", 1, 200), Read("grep", "b.go", 3, 3)]
+    assert encode_marker(reads, max_bytes=MAX_THREAD_MARKER_BYTES) == encode_marker(reads)
+
+
+def test_oversized_grep_section_first_loses_line_numbers_not_files():
+    reads = [Read("read_file", "a.go", 1, 200), *many_grep_hits(files=60, lines_per_file=30)]
+    assert len(encode_marker(reads)) > MAX_THREAD_MARKER_BYTES
+    marker = encode_marker(reads, max_bytes=MAX_THREAD_MARKER_BYTES)
+    assert len(marker.encode()) <= MAX_THREAD_MARKER_BYTES
+    decoded = decode_marker(marker)
+    assert decoded["read"] == {"a.go": [(1, 200)]}
+    assert len(decoded["grep"]) == 60
+    assert all(spans is None for spans in decoded["grep"].values())
+    assert decoded["grep_lines"] is False
+    assert decoded["grep_dropped"] == 0
+
+
+def test_still_oversized_grep_section_drops_files_and_counts_them():
+    reads = [Read("read_file", "a.go", 1, 200), Read("list_files", "*.go", None, None),
+             *many_grep_hits(files=2500)]
+    marker = encode_marker(reads, max_bytes=MAX_THREAD_MARKER_BYTES)
+    assert len(marker.encode()) <= MAX_THREAD_MARKER_BYTES
+    decoded = decode_marker(marker)
+    assert decoded["read"] == {"a.go": [(1, 200)]}
+    assert decoded["list"] == ["*.go"]
+    assert decoded["grep_dropped"] > 0
+    assert len(decoded["grep"]) + decoded["grep_dropped"] == 2500
+
+
+def test_full_record_decodes_with_lines_and_nothing_dropped():
+    decoded = decode_marker(encode_marker([Read("grep", "b.go", 3, 3)]))
+    assert decoded["grep"] == {"b.go": [(3, 3)]}
+    assert decoded["grep_lines"] is True
+    assert decoded["grep_dropped"] == 0

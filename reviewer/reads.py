@@ -74,6 +74,10 @@ def _ranges(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
     return merged
 
 
+def _grep_paths(reads) -> list[str]:
+    return sorted({read.path for read in reads if read.tool == "grep"})
+
+
 def _lines_section(reads, tool: str) -> str:
     by_path: dict[str, list[tuple[int, int]]] = {}
     for read in reads:
@@ -88,21 +92,54 @@ def _lines_section(reads, tool: str) -> str:
     return "|".join(parts)
 
 
-def encode_marker(reads) -> str:
-    """Compact, stable, machine-readable record of a pass's reads."""
+# A thread comment has to stay a comment. read_file and list_files are bounded by
+# the loop's iteration limit; grep is not (100 hits per call, in as many files).
+MAX_THREAD_MARKER_BYTES = 8000
+
+
+def encode_marker(reads, max_bytes: int | None = None) -> str:
+    """Compact, stable, machine-readable record of a pass's reads.
+
+    With `max_bytes`, only the grep section is ever reduced - first to file names
+    without line numbers (`grep_lines=0`), then by dropping files from the end
+    (`grep_dropped=N`). read= and list= are never cut: they are what the model
+    chose to open, and they are bounded anyway. Without `max_bytes` the record is
+    complete; the job log keeps that version."""
+    reads = list(reads)
+    head = f"v={MARKER_VERSION};read={_lines_section(reads, 'read_file')}"
     masks = "|".join(_q(r.path) for r in reads if r.tool == "list_files")
-    return (
-        f"v={MARKER_VERSION};read={_lines_section(reads, 'read_file')}"
-        f";grep={_lines_section(reads, 'grep')};list={masks}"
-    )
+
+    full = f"{head};grep={_lines_section(reads, 'grep')};list={masks}"
+    if max_bytes is None or len(full.encode()) <= max_bytes:
+        return full
+
+    paths = [_q(path) for path in _grep_paths(reads)]
+    kept = len(paths)
+    while True:
+        dropped = len(paths) - kept
+        marker = (f"{head};grep={'|'.join(paths[:kept])};list={masks}"
+                  f";grep_lines=0;grep_dropped={dropped}")
+        if len(marker.encode()) <= max_bytes or kept == 0:
+            return marker
+        # Shrink proportionally rather than one path at a time: thousands of paths
+        # would otherwise mean thousands of re-encodings.
+        excess = len(marker.encode()) - max_bytes
+        average = max(len(marker.encode()) // max(kept, 1), 1)
+        kept = max(kept - max(excess // average, 1), 0)
 
 
 def decode_marker(marker: str) -> dict:
-    """Inverse of encode_marker, for the measurement over accumulated threads."""
+    """Inverse of encode_marker, for the measurement over accumulated threads.
+
+    A grep file without line numbers decodes to None, not to an empty list: the
+    lines were seen but not kept."""
     fields = dict(part.split("=", 1) for part in marker.split(";"))
     decoded: dict = {"read": {}, "grep": {}, "list": []}
     for section in ("read", "grep"):
         for entry in filter(None, fields.get(section, "").split("|")):
+            if ":" not in entry:
+                decoded[section][unquote(entry)] = None
+                continue
             path, spans = entry.rsplit(":", 1)
             ranges = []
             for span in spans.split(","):
@@ -110,4 +147,6 @@ def decode_marker(marker: str) -> dict:
                 ranges.append((int(start), int(end or start)))
             decoded[section][unquote(path)] = ranges
     decoded["list"] = [unquote(m) for m in filter(None, fields.get("list", "").split("|"))]
+    decoded["grep_lines"] = fields.get("grep_lines", "1") != "0"
+    decoded["grep_dropped"] = int(fields.get("grep_dropped", "0"))
     return decoded
