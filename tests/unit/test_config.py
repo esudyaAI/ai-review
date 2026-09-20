@@ -247,3 +247,41 @@ def test_deep_paths_are_matched_by_both_glob_forms():
         assert config.is_review_pointless(("docs/a/b/deep.md",)), pattern
         assert config.is_review_pointless(("docs/api.md",)), pattern
         assert not config.is_review_pointless(("internal/api/handler.go",)), pattern
+
+
+# --- generated_paths -----------------------------------------------------------
+# A second list, separate from skip_paths on purpose. skip_paths answers "is
+# this merge request worth a review at all", and a .md file in a diff that also
+# has code still reaches the model by an explicit decision (see
+# test_one_code_file_brings_the_model_back in test_cli.py): a README is often
+# where it shows that the change is described wrongly.
+#
+# generated_paths answers a different question. The file is produced by a
+# committed builder from committed inputs, and a test in the repository asserts
+# it still is. There is no judgement for a reviewer to make about its contents,
+# and eight thousand lines of it cost real money to send.
+def test_a_generated_file_is_told_apart_from_the_rest():
+    config = Config(
+        test_command="", provider="openai", base_url="https://api.openai.com/v1",
+        model="m", model_high_risk="m", high_risk_paths=(),
+        generated_paths=("docs/shared/roles.json", "docs/generated/**"),
+        limits=Limits(),
+    )
+    reviewable, generated = config.partition_generated(
+        ("app/main.py", "docs/shared/roles.json", "docs/generated/x/y.json",
+         "docs/shared/employment-vocabulary.json"))
+    assert reviewable == ("app/main.py", "docs/shared/employment-vocabulary.json")
+    assert generated == ("docs/shared/roles.json", "docs/generated/x/y.json")
+
+
+def test_without_the_list_nothing_is_generated():
+    config = Config(
+        test_command="", provider="openai", base_url="https://api.openai.com/v1",
+        model="m", model_high_risk="m", high_risk_paths=(), limits=Limits(),
+    )
+    assert config.partition_generated(("a.py", "b.json")) == (("a.py", "b.json"), ())
+
+
+def test_generated_paths_are_read_from_the_file():
+    config = load_config(FIXTURE)
+    assert config.generated_paths == ("docs/shared/roles.json",)
