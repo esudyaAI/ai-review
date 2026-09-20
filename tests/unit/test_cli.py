@@ -670,3 +670,102 @@ def test_log_keeps_the_full_record_even_when_the_thread_copy_is_bounded(tmp_path
     out = capsys.readouterr().out
     assert "pkg2999/file_with_a_long_name_2999.go:7" in out
     assert "grep_dropped" not in out
+
+
+# --- Generated files: not counted against the limit, and never sent to the model -
+# Measured on jobbytime-matcher !133, 2026-09-21: a merge request of a builder,
+# its tests and the dictionary that builder produces was refused outright --
+# "изменено 8924 строк, лимит 3000", exit 3 -- so nothing was reviewed at all,
+# code included. 8000 of those lines were the generated file. skip_paths could
+# not help: check_limits runs before it, and changed_line_count counts every
+# file in the diff whether or not anyone will read it.
+def _generated_file(path, added):
+    body = "@@ -0,0 +1,%d @@\n" % added + "".join("+x\n" for _ in range(added))
+    return FileDiff(path, path, body, tuple(range(1, added + 1)))
+
+
+def _generated_and_code_mr():
+    return MergeRequestDiff(
+        base_sha="b" * 40, head_sha="h" * 40, start_sha="s" * 40,
+        files=(
+            _generated_file("docs/shared/roles.json", 5000),
+            FileDiff("scripts/build.py", "scripts/build.py",
+                     "@@ -1,1 +1,2 @@\n x\n+y\n", (2,)),
+        ),
+    )
+
+
+def test_a_generated_file_does_not_count_against_the_size_limit(tmp_path):
+    config = make_config(generated_paths=("docs/shared/roles.json",),
+                         limits=Limits(max_changed_lines=100))
+    factory = RecordingReviewerFactory()
+
+    code = review(config, tmp_path, FakeClient(_generated_and_code_mr()), factory,
+                  lambda d: None, mr_iid=7)
+
+    assert code != EXIT_TOO_LARGE
+    assert factory.calls == [("m", ("scripts/build.py",))]
+
+
+def test_a_generated_file_is_named_in_the_log_rather_than_dropped_quietly(tmp_path, capsys):
+    config = make_config(generated_paths=("docs/shared/roles.json",))
+    review(config, tmp_path, FakeClient(_generated_and_code_mr()),
+           RecordingReviewerFactory(), lambda d: None, mr_iid=7)
+
+    assert "docs/shared/roles.json" in capsys.readouterr().err
+
+
+def test_a_diff_of_generated_files_only_needs_no_model(tmp_path):
+    mr = MergeRequestDiff(
+        base_sha="b" * 40, head_sha="h" * 40, start_sha="s" * 40,
+        files=(_generated_file("docs/shared/roles.json", 5000),),
+    )
+    config = make_config(generated_paths=("docs/shared/roles.json",),
+                         limits=Limits(max_changed_lines=100))
+    factory = RecordingReviewerFactory()
+
+    code = review(config, tmp_path, FakeClient(mr), factory, lambda d: None, mr_iid=7)
+
+    assert code == EXIT_CLEAN
+    assert factory.calls == []
+
+
+def test_an_empty_diff_is_not_mistaken_for_a_generated_only_one(tmp_path, capsys):
+    """An empty diff is a strange state, not a merge request of generated files.
+
+    `is_review_pointless` guards the same thing for skip_paths and says why:
+    exiting zero on it would hide the strangeness.
+    """
+    mr = MergeRequestDiff(base_sha="b" * 40, head_sha="h" * 40, start_sha="s" * 40,
+                          files=())
+    config = make_config(generated_paths=("docs/shared/roles.json",))
+
+    review(config, tmp_path, FakeClient(mr), RecordingReviewerFactory(),
+           lambda d: None, mr_iid=7)
+
+    assert "не ревьюируются" not in capsys.readouterr().err
+
+
+def test_a_generated_file_alongside_a_docs_only_diff_still_skips_the_run(tmp_path):
+    """The two lists do not get in each other's way.
+
+    A diff of one .md and one generated file is still "nothing here needs a
+    review": dropping the generated file leaves only the .md, and skip_paths
+    cancels the run as it did before.
+    """
+    mr = MergeRequestDiff(
+        base_sha="b" * 40, head_sha="h" * 40, start_sha="s" * 40,
+        files=(
+            FileDiff("README.md", "README.md", "@@ -1,1 +1,2 @@\n x\n+y\n", (2,)),
+            _generated_file("docs/shared/roles.json", 5000),
+        ),
+    )
+    config = make_config(skip_paths=("*.md",),
+                         generated_paths=("docs/shared/roles.json",),
+                         limits=Limits(max_changed_lines=100))
+    factory = RecordingReviewerFactory()
+
+    code = review(config, tmp_path, FakeClient(mr), factory, lambda d: None, mr_iid=7)
+
+    assert code == EXIT_CLEAN
+    assert factory.calls == []

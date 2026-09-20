@@ -9,3 +9,5 @@ high_risk_paths:
 limits:
   max_files: 40
   max_changed_lines: 2000
+generated_paths:
+  - docs/shared/roles.json

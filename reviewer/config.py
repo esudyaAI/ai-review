@@ -59,6 +59,23 @@ class Config:
     # правила, по которым ревьюируется весь остальной код. Правка в нём меняет
     # поведение всех будущих прогонов — это ближе к коду, чем к документации.
     skip_paths: tuple[str, ...] = ()
+    # Файлы, которые собирает закоммиченный сборщик из закоммиченных входных
+    # данных и про которые в репозитории есть тест, что они ему всё ещё равны.
+    #
+    # Это НЕ skip_paths пошире. skip_paths отвечает на вопрос «стоит ли вообще
+    # запускать ревью этого merge request», и .md в дифф с кодом попадает
+    # намеренно: README нередко и есть то место, где видно, что изменение
+    # описано неверно. Здесь вопрос другой — читать такой файл незачем в любом
+    # диффе: решений в нём нет, они в сборщике, а восемь тысяч строк стоят
+    # настоящих денег за токены.
+    #
+    # Поэтому эти файлы уходят из диффа ДО проверки размера и до промпта.
+    # Замер, ради которого список заведён: jobbytime-matcher !133, 21.09.2026 —
+    # «изменено 8924 строк, лимит 3000», код выхода 3, не прочитано ничего,
+    # включая сам сборщик; 8000 строк из 8924 — собранный им словарь.
+    #
+    # Умолчание пустое: незнакомый файл сюда не попадает и ревью получает.
+    generated_paths: tuple[str, ...] = ()
     limits: Limits = field(default_factory=Limits)
     # Per-model USD price per million tokens, e.g. {"gpt-x": {"input": 0.75,
     # "output": 4.50, "cached_input": 0.50}}. A model with no entry here still
@@ -89,6 +106,30 @@ class Config:
         return any(
             re.search(pattern, content, re.IGNORECASE)
             for pattern in self.high_risk_content
+        )
+
+    def partition_generated(
+        self, changed_files: Iterable[str]
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """(files to review, generated files), original order preserved.
+
+        An empty `generated_paths` leaves everything on the left: a repository
+        that has not named its generated files has none as far as the reviewer
+        is concerned.
+        """
+        paths = tuple(changed_files)
+        if not self.generated_paths:
+            return paths, ()
+        generated = tuple(path for path in paths if self._is_generated(path))
+        if not generated:
+            return paths, ()
+        remaining = tuple(path for path in paths if path not in set(generated))
+        return remaining, generated
+
+    def _is_generated(self, path: str) -> bool:
+        return any(
+            fnmatch(path, pattern) or fnmatch(path, pattern.replace("/**", "/*"))
+            for pattern in self.generated_paths
         )
 
     def is_review_pointless(self, changed_files: Iterable[str]) -> bool:
@@ -169,6 +210,7 @@ def load_config(path: Path) -> Config:
         high_risk_paths=tuple(raw.get("high_risk_paths") or ()),
         high_risk_content=tuple(raw.get("high_risk_content") or ()),
         skip_paths=tuple(raw.get("skip_paths") or ()),
+        generated_paths=tuple(raw.get("generated_paths") or ()),
         limits=Limits(
             max_files=limits_raw.get("max_files", defaults.max_files),
             max_changed_lines=limits_raw.get("max_changed_lines", defaults.max_changed_lines),

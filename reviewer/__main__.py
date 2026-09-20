@@ -69,9 +69,44 @@ def _describe(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {text}" if text else f"{type(exc).__name__} (без текста)"
 
 
+def _drop_generated(mr, config):
+    """The merge request without its generated files, or None if that is all it was.
+
+    Generated files leave before `check_limits`, not after it: a merge request
+    of a builder and the file that builder produces used to be refused whole
+    for being too large, so the builder -- the part with decisions in it --
+    went unreviewed. They leave before the prompt too, because there is nothing
+    in them to judge and the tokens are paid for.
+
+    Nothing is dropped quietly: the files are named in the log either way. An
+    empty diff is left alone -- it is a strange state, not a merge request of
+    generated files, and exiting zero on it would hide that.
+    """
+    if not mr.files:
+        return mr
+    reviewable, generated = config.partition_generated(mr.changed_files)
+    if not generated:
+        return mr
+    print(
+        f"AI review: не ревьюируются, собираются из репозитория: "
+        f"{', '.join(generated)} (generated_paths в .ai-review.yml)",
+        file=sys.stderr,
+    )
+    if not reviewable:
+        print(
+            "AI review: пропущено, в merge request нет ничего, кроме собранных файлов",
+            file=sys.stderr,
+        )
+        return None
+    return mr.subset(reviewable)
+
+
 def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int, on_loop=None) -> int:
     try:
         mr = client.fetch_diff(mr_iid)
+        mr = _drop_generated(mr, config)
+        if mr is None:
+            return EXIT_CLEAN
         check_limits(mr, config.limits)
     except DiffTooLarge as exc:
         print(f"AI review: {exc}", file=sys.stderr)
