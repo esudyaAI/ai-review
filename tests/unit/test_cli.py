@@ -460,6 +460,31 @@ def test_finding_outside_the_diff_is_not_published_and_does_not_block(tmp_path, 
     assert "вне изменённого диффа" in captured.out
 
 
+# The log line used to end at "отброшена": category, file, line. What the
+# finding said was gone for good, so a true finding lost to an imprecise anchor
+# looked exactly like noise. The job log is the only place a dropped finding
+# can still be read.
+def test_the_log_says_what_a_dropped_finding_was(tmp_path, capsys):
+    off_diff = Finding(
+        category="bug", file="a.go", line_start=132, line_end=132,
+        title="Сессия выдаётся без проверки пароля",
+        problem="Ветка существующего адреса возвращает токен.\nВторая строка описания.",
+        evidence="e", suggested_fix="s", confidence="high",
+    )
+    client = FakeClient(make_mr())
+    review(make_config(), tmp_path, client, lambda model: FakeReviewer([off_diff]),
+           lambda d: None, mr_iid=7)
+    out = capsys.readouterr().out
+    assert "Сессия выдаётся без проверки пароля" in out
+    assert "Ветка существующего адреса возвращает токен." in out
+    # One finding, one line of text: a multi-line problem must not break the
+    # "AI review:" prefix the log is grepped by.
+    said = [line for line in out.splitlines() if "Сессия выдаётся" in line]
+    assert len(said) == 1
+    assert said[0].startswith("AI review:")
+    assert "Вторая строка описания." in said[0]
+
+
 # --- Outcome classification and readable technical errors -------------------
 #
 # A technical failure and "there are findings" were already told apart by the exit
