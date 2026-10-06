@@ -63,6 +63,10 @@ class GateDecision:
     not_applicable: tuple[tuple[str, str], ...] = ()
     covered_by_new_tests: tuple[tuple[str, str], ...] = ()
     outside_diff: tuple[tuple[str, str, int], ...] = ()
+    # The findings behind outside_diff, whole. outside_diff says where a
+    # dropped finding pointed; this says what it was, which is the only way to
+    # tell a true finding lost to an imprecise anchor from noise.
+    dropped_outside_diff: tuple[Finding, ...] = ()
 
     @property
     def blocking_count(self) -> int:
@@ -106,6 +110,7 @@ def decide(
     # written before this rule. review() always passes the mapping; a filter
     # that dropped everything when it is missing would be worse than no filter.
     outside_diff: tuple[tuple[str, str, int], ...] = ()
+    dropped_outside_diff: tuple[Finding, ...] = ()
     dropped_findings: list[Finding] = []
     surviving_findings: list[Finding] = []
     if added_lines is not None:
@@ -118,6 +123,9 @@ def decide(
         findings = kept
         outside_diff = tuple(sorted(
             {(f.category, f.file, f.line_start) for f in dropped}
+        ))
+        dropped_outside_diff = tuple(sorted(
+            dropped, key=lambda f: (f.category, f.file, f.line_start, f.title),
         ))
         # A thread already open on a dropped finding is left exactly as it is:
         # resolving it would claim a fix that never happened, and keeping it in
@@ -287,4 +295,5 @@ def decide(
         not_applicable=not_applicable,
         covered_by_new_tests=covered_by_new_tests,
         outside_diff=outside_diff,
+        dropped_outside_diff=dropped_outside_diff,
     )

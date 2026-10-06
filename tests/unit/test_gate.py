@@ -460,6 +460,25 @@ def test_finding_on_a_line_the_merge_request_did_not_add_is_dropped():
     assert result.outside_diff == (("bug", "a.go", 132),)
 
 
+# The drop is a judgement about where a finding points, not about whether it is
+# right, and the line a model names is the least reliable thing it says: on
+# jobbytime-go !323 a [bug] was anchored to `if exists {`, an untouched line
+# with added lines directly above and below it, and on jobbytime-front !236 to
+# the closing brace one line above an added block. Both were dropped, both
+# correctly by the letter of the rule -- and nobody could say what they were,
+# because only the category and the line survived. A finding that is dropped
+# has to stay readable, or the rule cannot be judged against its own cost.
+def test_a_dropped_finding_is_handed_back_whole():
+    lost = _finding_at(132)
+    result = decide([lost, _finding_at(11)], [], ["a.go"], (), ADDED)
+    assert result.dropped_outside_diff == (lost,)
+
+
+def test_nothing_is_handed_back_when_nothing_is_dropped():
+    result = decide([_finding_at(11)], [], ["a.go"], (), ADDED)
+    assert result.dropped_outside_diff == ()
+
+
 def test_finding_on_an_added_line_is_kept():
     result = decide([_finding_at(11)], [], ["a.go"], (), ADDED)
     assert [f.line_start for f in result.to_create] == [11]

@@ -56,6 +56,17 @@ def outcome_line(code: int) -> str:
     return f"AI review: итог — {_OUTCOME_BY_CODE.get(code, 'неизвестный исход')}, код выхода {code}"
 
 
+def _one_line(text: str, limit: int = 600) -> str:
+    """A finding's text as one log line.
+
+    The job log is grepped by the "AI review:" prefix, so a multi-line problem
+    statement must not spill onto lines that lack it. Cut rather than dropped
+    when long: the start of a finding is what identifies it.
+    """
+    flat = " ".join(text.split())
+    return flat if len(flat) <= limit else flat[: limit - 1] + "…"
+
+
 def _describe(exc: BaseException) -> str:
     """Name the exception class, not just its text.
 
@@ -238,6 +249,13 @@ def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int, 
     for category, path, line in decision.outside_diff:
         print(f"AI review: находка [{category}] в {path}:{line} отброшена — "
               f"строка вне изменённого диффа этого merge request'а")
+    # And what it was. The drop judges where a finding points, not whether it
+    # is right, and the line is the least reliable thing a model names: a true
+    # finding anchored one line off looks, without this, exactly like noise.
+    for finding in decision.dropped_outside_diff:
+        print(f"AI review: отброшенная находка [{finding.category}] "
+              f"{finding.file}:{finding.line_start}-{finding.line_end} — "
+              f"{_one_line(finding.title)}: {_one_line(finding.problem)}")
 
     for category, path in decision.covered_by_new_tests:
         print(f"AI review: находка [{category}] в {path} отброшена — этот merge "
