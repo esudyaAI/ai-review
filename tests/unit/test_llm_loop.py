@@ -558,3 +558,15 @@ def test_a_last_iteration_answered_with_text_is_still_incomplete(tools):
     provider = ToolRecordingProvider([list_files_call("i1"), ProviderResponse(tool_calls=(), text="later")])
     with pytest.raises(ReviewIncomplete):
         ReviewLoop(provider, tools, max_iterations=2).run("system", "user")
+
+
+# Called without changed_files and without max_iterations -- how a caller that
+# knows nothing about the diff calls it -- the pass gets the base budget of 25,
+# the fixed ceiling it had before the budget began to grow.
+def test_without_a_file_count_the_pass_keeps_the_base_budget(tools):
+    provider = ToolRecordingProvider([list_files_call(f"i{n}") for n in range(24)] + [submit_call([VALID_FINDING])])
+    findings = ReviewLoop(provider, tools).run("system", "user")
+    assert len(findings) == 1
+    assert len(provider.offered) == 25
+    assert provider.offered[-1] == ["submit_findings"]
+    assert all(len(names) > 1 for names in provider.offered[:-1])
