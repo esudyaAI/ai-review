@@ -319,7 +319,7 @@ class RecordingReviewerFactory:
         factory = self
 
         class _Reviewer:
-            def run(self_inner, system_prompt, user_prompt):
+            def run(self_inner, system_prompt, user_prompt, changed_files=None):
                 files = tuple(
                     line[2:] for line in user_prompt.splitlines() if line.startswith("- ")
                 )

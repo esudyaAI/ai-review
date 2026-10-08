@@ -179,7 +179,9 @@ def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int, 
             # a run that died after twenty tool calls is exactly the case worth seeing.
             if on_loop is not None:
                 on_loop(reviewer)
-            findings.extend(reviewer.run(system_prompt, build_user_prompt(mr.subset(files))))
+            findings.extend(
+                reviewer.run(system_prompt, build_user_prompt(mr.subset(files)), changed_files=len(files))
+            )
     except ReviewIncomplete as exc:
         print(f"AI review: ревью не завершено ({exc}), нужен реран", file=sys.stderr)
         return EXIT_TECHNICAL

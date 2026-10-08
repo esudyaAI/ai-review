@@ -20,13 +20,25 @@ MAX_TEXT_REMINDERS = 2
 MIN_INVESTIGATION_CALLS = 3
 MAX_INVESTIGATION_REMINDERS = 2
 
-# Stub for the red commit.
-BUDGET_EXHAUSTED_REMINDER = ""
+# The step budget of one review pass. 25 was a fixed ceiling until 2026-10-09
+# and fits a merge request of about ten files. Each file beyond that adds a
+# step, up to MAX_ITERATIONS: two runs over the forty files of jobbytime-go
+# !340 spent all 25 steps reading and submitted nothing ($4.49, no review).
+BASE_ITERATIONS = 25
+BASE_FILES = 10
+MAX_ITERATIONS = 45
+
+BUDGET_EXHAUSTED_REMINDER = (
+    "Бюджет шагов исчерпан. Сдай вердикт сейчас через submit_findings — по тому, "
+    "что уже прочитал. Других инструментов на этом шаге нет."
+)
 
 
 def iteration_budget(changed_files: int) -> int:
-    """Stub for the red commit."""
-    return 25
+    """Steps for a pass over changed_files files: BASE_ITERATIONS, one more per
+    file beyond BASE_FILES, never more than MAX_ITERATIONS."""
+    extra = max(0, changed_files - BASE_FILES)
+    return min(BASE_ITERATIONS + extra, MAX_ITERATIONS)
 
 TOOL_REQUIRED_REMINDER = (
     "Ты обязан вызвать инструмент: read_file, grep, list_files или submit_findings. "
@@ -66,7 +78,7 @@ class ReviewLoop:
         self,
         provider: LLMProvider,
         tools: RepoTools,
-        max_iterations: int = 25,
+        max_iterations: int | None = None,
     ) -> None:
         self._provider = provider
         self._tools = tools
@@ -85,12 +97,27 @@ class ReviewLoop:
         investigation_reminders = 0
         investigation_calls = 0
         self._reads = []
+        # An explicit max_iterations wins (tests, callers that know better);
+        # otherwise the pass is sized by the files it reviews.
+        limit = (
+            self._max_iterations
+            if self._max_iterations is not None
+            else iteration_budget(changed_files or 0)
+        )
 
-        for _ in range(self._max_iterations):
+        for step in range(limit):
+            # The last step offers nothing but the verdict and says so: a pass
+            # that read a lot ends with what it found, not with "never called
+            # submit_findings" and a paid rerun.
+            last = step == limit - 1
+            offered = available
+            if last:
+                messages.append({"role": "user", "content": BUDGET_EXHAUSTED_REMINDER})
+                offered = [SUBMIT_FINDINGS_TOOL]
             # Counted after the answer, not before it: a provider error would
             # otherwise report a round trip that never happened, and this number
             # exists precisely to explain where the tokens went.
-            response = self._provider.complete(messages, available)
+            response = self._provider.complete(messages, offered)
             self.stats.iterations += 1
             if not response.tool_calls:
                 if text_reminders >= MAX_TEXT_REMINDERS:
@@ -108,8 +135,10 @@ class ReviewLoop:
                 # Nudge the model to investigate first; after MAX_INVESTIGATION_REMINDERS
                 # give up nudging and accept whatever verdict it hands us - further
                 # blocking would only burn tokens with no guarantee of compliance.
+                # On the last step there is no next step to investigate in.
                 if (
-                    investigation_calls < MIN_INVESTIGATION_CALLS
+                    not last
+                    and investigation_calls < MIN_INVESTIGATION_CALLS
                     and investigation_reminders < MAX_INVESTIGATION_REMINDERS
                 ):
                     investigation_reminders += 1
