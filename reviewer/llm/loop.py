@@ -20,6 +20,14 @@ MAX_TEXT_REMINDERS = 2
 MIN_INVESTIGATION_CALLS = 3
 MAX_INVESTIGATION_REMINDERS = 2
 
+# Stub for the red commit.
+BUDGET_EXHAUSTED_REMINDER = ""
+
+
+def iteration_budget(changed_files: int) -> int:
+    """Stub for the red commit."""
+    return 25
+
 TOOL_REQUIRED_REMINDER = (
     "Ты обязан вызвать инструмент: read_file, grep, list_files или submit_findings. "
     "Обычный текст недопустим."
@@ -66,7 +74,7 @@ class ReviewLoop:
         self.stats = LoopStats()
         self._reads: list[Read] = []
 
-    def run(self, system_prompt: str, user_prompt: str) -> list[Finding]:
+    def run(self, system_prompt: str, user_prompt: str, changed_files: int | None = None) -> list[Finding]:
         messages: list[dict] = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},

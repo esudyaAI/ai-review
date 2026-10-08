@@ -3,7 +3,8 @@ import json
 import pytest
 
 from reviewer.llm.base import ProviderResponse, ToolCall
-from reviewer.llm.loop import ReviewIncomplete, ReviewLoop
+from reviewer.findings import SUBMIT_FINDINGS_TOOL
+from reviewer.llm.loop import BUDGET_EXHAUSTED_REMINDER, ReviewIncomplete, ReviewLoop, iteration_budget
 from reviewer.tools import RepoTools
 
 
@@ -493,3 +494,67 @@ def test_a_second_run_of_the_same_loop_does_not_inherit_the_first_runs_reads(too
     loop.run("system", "user")
     findings = loop.run("system", "user")
     assert all(r.tool == "list_files" for r in findings[0].reads)
+
+
+class ToolRecordingProvider(ScriptedProvider):
+    """A scripted provider that also records which tools each call offered."""
+
+    def __init__(self, responses):
+        super().__init__(responses)
+        self.offered: list[list[str]] = []
+
+    def complete(self, messages, tools):
+        self.offered.append([tool["function"]["name"] for tool in tools])
+        return super().complete(messages, tools)
+
+
+# go !340 (2026-10-08): two runs over a 40-file diff spent 25 iterations reading
+# and never submitted -- $4.49 for "ревью не завершено". A bigger diff needs more
+# steps; the budget grows with it, up to a ceiling.
+def test_the_iteration_budget_grows_with_the_files_under_review():
+    assert iteration_budget(0) == 25
+    assert iteration_budget(10) == 25
+    assert iteration_budget(11) == 26
+    assert iteration_budget(20) == 35
+    assert iteration_budget(30) == 45
+    assert iteration_budget(400) == 45
+
+
+def test_the_budget_follows_the_files_of_the_pass(tools):
+    # Ten reads, then the verdict: with one file the budget is 25 and this fits;
+    # what is checked is that the loop sizes itself from changed_files.
+    provider = ToolRecordingProvider([list_files_call(f"i{n}") for n in range(30)] + [submit_call([VALID_FINDING])])
+    findings = ReviewLoop(provider, tools).run("system", "user", changed_files=16)
+    # 16 files -> 31 iterations: 30 reads, the 31st offers only the verdict.
+    assert len(findings) == 1
+    assert len(provider.offered) == 31
+    assert provider.offered[-1] == ["submit_findings"]
+
+
+# The last iteration of the budget offers nothing but the verdict and says why,
+# so a review that read a lot ends with the findings it has instead of nothing.
+def test_the_last_iteration_offers_only_the_verdict(tools):
+    provider = ToolRecordingProvider([
+        list_files_call("i1"), list_files_call("i2"), list_files_call("i3"),
+        submit_call([VALID_FINDING], call_id="s1"),
+    ])
+    findings = ReviewLoop(provider, tools, max_iterations=4).run("system", "user")
+
+    assert len(findings) == 1
+    assert provider.offered[-1] == ["submit_findings"]
+    assert all("submit_findings" in names and len(names) > 1 for names in provider.offered[:-1])
+    assert provider.calls[-1][-1] == {"role": "user", "content": BUDGET_EXHAUSTED_REMINDER}
+
+
+# On the last step the verdict is taken even below the investigation minimum:
+# there is no next step to investigate in.
+def test_the_last_iteration_takes_the_verdict_without_more_reading(tools):
+    provider = ToolRecordingProvider([list_files_call("i1"), submit_call([VALID_FINDING], call_id="s1")])
+    findings = ReviewLoop(provider, tools, max_iterations=2).run("system", "user")
+    assert len(findings) == 1
+
+
+def test_a_last_iteration_answered_with_text_is_still_incomplete(tools):
+    provider = ToolRecordingProvider([list_files_call("i1"), ProviderResponse(tool_calls=(), text="later")])
+    with pytest.raises(ReviewIncomplete):
+        ReviewLoop(provider, tools, max_iterations=2).run("system", "user")
