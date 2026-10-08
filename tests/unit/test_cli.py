@@ -55,7 +55,8 @@ class FakeReviewer:
         self.findings = list(findings)
         self.error = error
 
-    def run(self, system_prompt, user_prompt):
+    def run(self, system_prompt, user_prompt, changed_files=None):
+        self.changed_files = changed_files
         if self.error:
             raise self.error
         return self.findings
@@ -318,7 +319,7 @@ class RecordingReviewerFactory:
         factory = self
 
         class _Reviewer:
-            def run(self_inner, system_prompt, user_prompt):
+            def run(self_inner, system_prompt, user_prompt, changed_files=None):
                 files = tuple(
                     line[2:] for line in user_prompt.splitlines() if line.startswith("- ")
                 )
@@ -794,3 +795,24 @@ def test_a_generated_file_alongside_a_docs_only_diff_still_skips_the_run(tmp_pat
 
     assert code == EXIT_CLEAN
     assert factory.calls == []
+
+
+def test_each_pass_tells_its_loop_how_many_files_it_reviews(tmp_path):
+    reviewers = []
+
+    def make_reviewer(model):
+        reviewer = FakeReviewer([])
+        reviewers.append((model, reviewer))
+        return reviewer
+
+    mr = MergeRequestDiff(
+        base_sha="b" * 40, head_sha="h" * 40, start_sha="s" * 40,
+        files=(
+            FileDiff("internal/billing/x.go", "internal/billing/x.go", "@@ -1,2 +1,3 @@\n x\n+y\n", (2,)),
+            FileDiff("a.go", "a.go", "@@ -1,2 +1,3 @@\n x\n+y\n", (2,)),
+            FileDiff("b.go", "b.go", "@@ -1,2 +1,3 @@\n x\n+y\n", (2,)),
+        ),
+    )
+    config = make_config(model="weak", model_high_risk="strong", high_risk_paths=("internal/billing/**",))
+    review(config, tmp_path, FakeClient(mr), make_reviewer, lambda d: None, mr_iid=7)
+    assert [(model, reviewer.changed_files) for model, reviewer in reviewers] == [("strong", 1), ("weak", 2)]
