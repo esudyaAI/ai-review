@@ -9,7 +9,8 @@ from pathlib import Path
 
 import httpx
 
-from reviewer.adjudication import adjudicate
+from reviewer.adjudication import adjudicate, describe_current
+from reviewer.findings import BOT_NOTE_MARKER
 from reviewer.config import load_config
 from reviewer.deterministic import run_deterministic
 from reviewer.diff import DiffTooLarge, check_limits
@@ -110,6 +111,49 @@ def _drop_generated(mr, config):
         )
         return None
     return mr.subset(reviewable)
+
+
+RESTATED_MARKER = "<!-- ai-review:restated fp={fp} -->"
+
+
+def _restated(discussion, fingerprint: str) -> bool:
+    marker = RESTATED_MARKER.format(fp=fingerprint)
+    return any(marker in note.body for note in discussion.notes)
+
+
+def _restatement(finding) -> str:
+    """Puts into the thread a finding that was folded into it - otherwise its
+    text exists nowhere but in the model's output, and the author is asked to
+    answer something nobody can read (jobbytime-front !291)."""
+    return (
+        "На текущем коммите ревьюер относит к этому треду такое замечание:\n\n"
+        f"{describe_current(finding)}\n\n"
+        "Если это ложное срабатывание — ответь здесь же с обоснованием.\n"
+        f"{BOT_NOTE_MARKER}\n"
+        + RESTATED_MARKER.format(fp=finding.fingerprint)
+    )
+
+
+def _excerpt(repo: Path, finding, context: int = 6, limit: int = 80) -> str | None:
+    """The lines a finding points at, numbered, from the checkout of this commit.
+
+    The path comes from the model, so it is read only if it stays inside the
+    checkout: whatever is read here is sent to the model again.
+    """
+    try:
+        root = repo.resolve()
+        path = (repo / finding.file).resolve()
+        if root not in path.parents:
+            return None
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except (OSError, ValueError):
+        return None
+    start = max(1, finding.line_start - context)
+    end = min(len(lines), max(finding.line_end, finding.line_start) + context, start + limit - 1)
+    if start > end:
+        return None
+    body = "\n".join(f"{n:>5}  {lines[n - 1]}" for n in range(start, end + 1))
+    return f"{finding.file}:{start}-{end}\n{body}"
 
 
 def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int, on_loop=None) -> int:
@@ -228,17 +272,54 @@ def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int, 
 
     accepted: set[str] = set()
     by_id = {d.id: d for d in discussions}
+    reproduced_by = dict(decision.reproduced_by)
+
+    # A thread kept open by a finding other than its own: the finding that
+    # reproduces it now has to be readable in the thread, once per fingerprint.
+    def needs_restating(discussion_id: str):
+        current = reproduced_by.get(discussion_id)
+        discussion = by_id[discussion_id]
+        if current is None or current.fingerprint == discussion.fingerprint:
+            return None
+        if _restated(discussion, current.fingerprint):
+            return None
+        return current
+
+    for discussion_id, current in decision.reproduced_by:
+        if current.fingerprint != by_id[discussion_id].fingerprint:
+            print(f"AI review: тред {discussion_id} держит другая находка "
+                  f"[{current.category}] {current.file}:{current.line_start}-{current.line_end} — "
+                  f"{_one_line(current.title)}: {_one_line(current.problem)}")
+
     for discussion_id in decision.to_adjudicate:
         try:
-            verdict = adjudicator(by_id[discussion_id])
+            current = reproduced_by.get(discussion_id)
+            code = _excerpt(repo, current) if current is not None else None
+            verdict = adjudicator(by_id[discussion_id], current, code)
             if verdict.accepted:
                 client.resolve(mr_iid, discussion_id, f"Аргумент автора принят: {verdict.reason}")
                 accepted.add(discussion_id)
                 resolved_count += 1
             else:
-                client.reply(mr_iid, discussion_id, f"Замечание остаётся: {verdict.reason}")
+                body = f"Замечание остаётся: {verdict.reason}"
+                restate = needs_restating(discussion_id)
+                if restate is not None:
+                    body += "\n\n" + _restatement(restate)
+                client.reply(mr_iid, discussion_id, body)
         except Exception as exc:  # noqa: BLE001
             print(f"AI review: не удалось обработать адъюдикацию треда {discussion_id}: {_describe(exc)}", file=sys.stderr)
+
+    adjudicated = set(decision.to_adjudicate)
+    for discussion_id, _ in decision.reproduced_by:
+        if discussion_id in adjudicated:
+            continue
+        restate = needs_restating(discussion_id)
+        if restate is None:
+            continue
+        try:
+            client.reply(mr_iid, discussion_id, _restatement(restate))
+        except Exception as exc:  # noqa: BLE001
+            print(f"AI review: не удалось дописать в тред {discussion_id} текущее замечание: {_describe(exc)}", file=sys.stderr)
 
     # blocking_count/exit code reflect the real gate decision regardless of whether
     # publishing to GitLab succeeded (see the isolated try/except above) - a genuine
@@ -287,9 +368,9 @@ def _adjudicator_for(config, make_provider):
     dispute over a high-risk finding (e.g. billing/migrations) is resolved by the same
     stronger model that would have produced it, not always the base model."""
 
-    def adjudicate_discussion(discussion):
+    def adjudicate_discussion(discussion, current=None, code=None):
         model = config.model_for([discussion.file] if discussion.file else [])
-        return adjudicate(make_provider(model, ADJUDICATION_PHASE), discussion)
+        return adjudicate(make_provider(model, ADJUDICATION_PHASE), discussion, current, code)
 
     return adjudicate_discussion
 
