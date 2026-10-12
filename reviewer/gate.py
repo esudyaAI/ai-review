@@ -67,6 +67,12 @@ class GateDecision:
     # dropped finding pointed; this says what it was, which is the only way to
     # tell a true finding lost to an imprecise anchor from noise.
     dropped_outside_diff: tuple[Finding, ...] = ()
+    # For every thread kept open because its finding still reproduces: the
+    # finding that reproduces it on this commit. Usually the thread's own; after
+    # a push it can be a different finding that only shares the thread's scope
+    # (see _argues_about) - and then that finding is what the thread is about
+    # now, and nobody has seen its text unless it is passed on.
+    reproduced_by: tuple[tuple[str, Finding], ...] = ()
 
     @property
     def blocking_count(self) -> int:
@@ -249,6 +255,7 @@ def decide(
     to_resolve: list[str] = []
     kept_open: list[str] = []
     to_adjudicate: list[str] = []
+    reproduced_by: list[tuple[str, Finding]] = []
 
     for fp, discussion in open_by_fp.items():
         claim = _claim_of(discussion)
@@ -268,6 +275,10 @@ def decide(
         # thread stays open forever. A finding that stopped reproducing in a file
         # this merge request changed is fixed, and that is not a judgement call.
         if reproduces:
+            current = found_by_fp.get(fp) or next(
+                f for f in findings if claim is not None and _argues_about(claim, f)
+            )
+            reproduced_by.append((discussion.id, current))
             if discussion.has_human_reply:
                 to_adjudicate.append(discussion.id)
             kept_open.append(discussion.id)
@@ -296,4 +307,5 @@ def decide(
         covered_by_new_tests=covered_by_new_tests,
         outside_diff=outside_diff,
         dropped_outside_diff=dropped_outside_diff,
+        reproduced_by=tuple(reproduced_by),
     )

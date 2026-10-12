@@ -88,14 +88,14 @@ def finding():
 
 def test_clean_review_exits_zero(tmp_path):
     client = FakeClient(make_mr())
-    code = review(make_config(), tmp_path, client, lambda model: FakeReviewer([]), lambda d: None, mr_iid=7)
+    code = review(make_config(), tmp_path, client, lambda model: FakeReviewer([]), lambda d, *_: None, mr_iid=7)
     assert code == EXIT_CLEAN
     assert client.created == []
 
 
 def test_findings_are_posted_and_block(tmp_path):
     client = FakeClient(make_mr())
-    code = review(make_config(), tmp_path, client, lambda model: FakeReviewer([finding()]), lambda d: None, mr_iid=7)
+    code = review(make_config(), tmp_path, client, lambda model: FakeReviewer([finding()]), lambda d, *_: None, mr_iid=7)
     assert code == EXIT_FINDINGS
     assert [f.title for f in client.created] == ["Ошибка"]
 
@@ -107,7 +107,7 @@ def test_low_confidence_findings_are_dropped(tmp_path):
         confidence="medium",
     )
     client = FakeClient(make_mr())
-    code = review(make_config(), tmp_path, client, lambda model: FakeReviewer([weak]), lambda d: None, mr_iid=7)
+    code = review(make_config(), tmp_path, client, lambda model: FakeReviewer([weak]), lambda d, *_: None, mr_iid=7)
     assert code == EXIT_CLEAN
     assert client.created == []
 
@@ -116,7 +116,7 @@ def test_fixed_finding_is_resolved(tmp_path):
     old = finding()
     thread = Discussion(id=f"d-{old.fingerprint}", notes=(Note(id=1, body=render_comment(old)),), resolved=False)
     client = FakeClient(make_mr(), [thread])
-    code = review(make_config(), tmp_path, client, lambda model: FakeReviewer([]), lambda d: None, mr_iid=7)
+    code = review(make_config(), tmp_path, client, lambda model: FakeReviewer([]), lambda d, *_: None, mr_iid=7)
     assert client.resolved == [thread.id]
     assert code == EXIT_CLEAN
 
@@ -135,7 +135,7 @@ def test_accepted_author_argument_resolves_thread(tmp_path):
         reason = "автор прав"
 
     code = review(make_config(), tmp_path, client, lambda model: FakeReviewer([old]),
-                  lambda d: AcceptingVerdict(), mr_iid=7)
+                  lambda d, *_: AcceptingVerdict(), mr_iid=7)
     assert client.resolved == [thread.id]
     assert code == EXIT_CLEAN
 
@@ -154,7 +154,7 @@ def test_rejected_author_argument_keeps_thread_open(tmp_path):
         reason = "аргумент не подтверждается кодом"
 
     code = review(make_config(), tmp_path, client, lambda model: FakeReviewer([old]),
-                  lambda d: RejectingVerdict(), mr_iid=7)
+                  lambda d, *_: RejectingVerdict(), mr_iid=7)
     assert client.resolved == []
     assert client.replies and "аргумент не подтверждается кодом" in client.replies[0][1]
     assert code == EXIT_FINDINGS
@@ -163,14 +163,14 @@ def test_rejected_author_argument_keeps_thread_open(tmp_path):
 def test_oversized_diff_exits_with_its_own_code(tmp_path):
     client = FakeClient(make_mr())
     config = make_config(limits=Limits(max_files=0, max_changed_lines=0))
-    code = review(config, tmp_path, client, lambda model: FakeReviewer([]), lambda d: None, mr_iid=7)
+    code = review(config, tmp_path, client, lambda model: FakeReviewer([]), lambda d, *_: None, mr_iid=7)
     assert code == EXIT_TOO_LARGE
 
 
 def test_incomplete_review_is_a_technical_error(tmp_path):
     client = FakeClient(make_mr())
     reviewer = FakeReviewer(error=ReviewIncomplete("model never called submit_findings"))
-    code = review(make_config(), tmp_path, client, lambda model: reviewer, lambda d: None, mr_iid=7)
+    code = review(make_config(), tmp_path, client, lambda model: reviewer, lambda d, *_: None, mr_iid=7)
     assert code == EXIT_TECHNICAL
 
 
@@ -199,7 +199,7 @@ def test_create_discussion_failure_does_not_abort_the_run(tmp_path, capsys):
     # create_discussion blows up on the 2nd of 3 calls, simulating a GitLab API failure
     # mid-loop (e.g. after successfully posting the first discussion).
     client = FakeClient(wide_mr, fail_create_discussion_on_call=2)
-    code = review(make_config(), tmp_path, client, lambda model: FakeReviewer(findings), lambda d: None, mr_iid=7)
+    code = review(make_config(), tmp_path, client, lambda model: FakeReviewer(findings), lambda d, *_: None, mr_iid=7)
     # There are still 3 blocking findings, so the run must still block the merge even
     # though publishing the 2nd one failed.
     assert code == EXIT_FINDINGS
@@ -226,7 +226,7 @@ def test_high_risk_path_selects_the_stronger_model(tmp_path):
     )
     config = make_config(model="weak", model_high_risk="strong",
                          high_risk_paths=("internal/billing/**",))
-    review(config, tmp_path, FakeClient(mr), make_reviewer, lambda d: None, mr_iid=7)
+    review(config, tmp_path, FakeClient(mr), make_reviewer, lambda d, *_: None, mr_iid=7)
     assert seen == ["strong"]
 
 
@@ -337,7 +337,7 @@ def test_high_risk_files_are_reviewed_separately_from_the_rest(tmp_path):
     factory = RecordingReviewerFactory()
     client = FakeClient(make_mixed_mr())
 
-    review(config, tmp_path, client, factory, lambda d: None, mr_iid=7)
+    review(config, tmp_path, client, factory, lambda d, *_: None, mr_iid=7)
 
     assert dict(factory.calls) == {
         "strong": ("internal/service/auth_service.go",),
@@ -358,7 +358,7 @@ def test_findings_from_both_passes_are_reported(tmp_path):
 
     code = review(config, tmp_path, client,
                   RecordingReviewerFactory({"strong": [high], "mini": [low]}),
-                  lambda d: None, mr_iid=7)
+                  lambda d, *_: None, mr_iid=7)
 
     assert code == EXIT_FINDINGS
     assert sorted(f.title for f in client.created) == ["Дыра", "Течёт"]
@@ -371,7 +371,7 @@ def test_a_single_sided_diff_is_one_pass(tmp_path):
                          high_risk_paths=("internal/service/auth_*",))
     factory = RecordingReviewerFactory()
 
-    review(config, tmp_path, FakeClient(make_mr()), factory, lambda d: None, mr_iid=7)
+    review(config, tmp_path, FakeClient(make_mr()), factory, lambda d, *_: None, mr_iid=7)
     assert factory.calls == [("mini", ("a.go",))]
 
 
@@ -380,7 +380,7 @@ def test_without_a_distinct_strong_model_there_is_one_pass(tmp_path):
                          high_risk_paths=("internal/service/auth_*",))
     factory = RecordingReviewerFactory()
 
-    review(config, tmp_path, FakeClient(make_mixed_mr()), factory, lambda d: None, mr_iid=7)
+    review(config, tmp_path, FakeClient(make_mixed_mr()), factory, lambda d, *_: None, mr_iid=7)
     assert len(factory.calls) == 1
     assert factory.calls[0][0] == "mini"
 
@@ -394,7 +394,7 @@ def test_empty_strong_model_never_reaches_the_provider(tmp_path):
     factory = RecordingReviewerFactory()
 
     code = review(config, tmp_path, FakeClient(make_mixed_mr()), factory,
-                  lambda d: None, mr_iid=7)
+                  lambda d, *_: None, mr_iid=7)
 
     assert code == EXIT_CLEAN
     assert [model for model, _ in factory.calls] == ["mini"]
@@ -413,7 +413,7 @@ def test_all_high_risk_diff_with_empty_strong_model_is_still_reviewed(tmp_path):
                          high_risk_paths=("internal/service/auth_*",))
     factory = RecordingReviewerFactory()
 
-    review(config, tmp_path, FakeClient(mr), factory, lambda d: None, mr_iid=7)
+    review(config, tmp_path, FakeClient(mr), factory, lambda d, *_: None, mr_iid=7)
 
     assert factory.calls == [("mini", ("internal/service/auth_a.go",))]
 
@@ -436,7 +436,7 @@ def test_diff_without_high_risk_files_reviews_all_of_them_in_one_pass(tmp_path):
                          high_risk_paths=("internal/service/auth_*", "*stripe*"))
     factory = RecordingReviewerFactory()
 
-    review(config, tmp_path, FakeClient(mr), factory, lambda d: None, mr_iid=7)
+    review(config, tmp_path, FakeClient(mr), factory, lambda d, *_: None, mr_iid=7)
 
     assert factory.calls == [("mini", (
         "internal/stats/pipeline_stats.go", "internal/vacancies/updater.go", "README.md",
@@ -453,7 +453,7 @@ def test_finding_outside_the_diff_is_not_published_and_does_not_block(tmp_path, 
     )
     client = FakeClient(make_mr())
     code = review(make_config(), tmp_path, client, lambda model: FakeReviewer([off_diff]),
-                  lambda d: None, mr_iid=7)
+                  lambda d, *_: None, mr_iid=7)
     assert client.created == []
     assert code == EXIT_CLEAN
     captured = capsys.readouterr()
@@ -474,7 +474,7 @@ def test_the_log_says_what_a_dropped_finding_was(tmp_path, capsys):
     )
     client = FakeClient(make_mr())
     review(make_config(), tmp_path, client, lambda model: FakeReviewer([off_diff]),
-           lambda d: None, mr_iid=7)
+           lambda d, *_: None, mr_iid=7)
     out = capsys.readouterr().out
     assert "Сессия выдаётся без проверки пароля" in out
     assert "Ветка существующего адреса возвращает токен." in out
@@ -514,7 +514,7 @@ def test_technical_error_names_the_exception_type_when_it_has_no_text(tmp_path, 
 
     client = TimingOutClient(make_mr(), httpx.ReadTimeout(""))
     code = review(make_config(), tmp_path, client, lambda model: FakeReviewer([]),
-                  lambda d: None, mr_iid=7)
+                  lambda d, *_: None, mr_iid=7)
 
     assert code == EXIT_TECHNICAL
     err = capsys.readouterr().err
@@ -526,7 +526,7 @@ def test_technical_error_names_the_exception_type_when_it_has_no_text(tmp_path, 
 def test_technical_error_keeps_the_exception_text_when_there_is_one(tmp_path, capsys):
     client = TimingOutClient(make_mr(), RuntimeError("GitLab returned 502"))
     review(make_config(), tmp_path, client, lambda model: FakeReviewer([]),
-           lambda d: None, mr_iid=7)
+           lambda d, *_: None, mr_iid=7)
 
     err = capsys.readouterr().err
     assert "RuntimeError" in err, err
@@ -611,7 +611,7 @@ def test_migration_content_decides_the_model_not_just_the_path(tmp_path):
                          high_risk_paths=(), high_risk_content=(r"DROP\s+COLUMN",))
     factory = RecordingReviewerFactory()
 
-    review(config, tmp_path, FakeClient(_migration_mr()), factory, lambda d: None, mr_iid=7)
+    review(config, tmp_path, FakeClient(_migration_mr()), factory, lambda d, *_: None, mr_iid=7)
 
     assert dict(factory.calls) == {
         "strong": ("migrations/new/2_drop.sql",),
@@ -627,7 +627,7 @@ def test_a_deleted_file_falls_back_to_the_path_rule(tmp_path):
                          high_risk_content=(r"DROP\s+COLUMN",))
     factory = RecordingReviewerFactory()
 
-    review(config, tmp_path, FakeClient(_migration_mr()), factory, lambda d: None, mr_iid=7)
+    review(config, tmp_path, FakeClient(_migration_mr()), factory, lambda d, *_: None, mr_iid=7)
 
     assert dict(factory.calls) == {
         "strong": ("migrations/new/1_add.sql", "migrations/new/2_drop.sql"),
@@ -638,7 +638,7 @@ def test_a_docs_only_diff_never_reaches_the_model(tmp_path):
     config = make_config(skip_paths=("*.md", "docs/**"))
     factory = RecordingReviewerFactory()
 
-    code = review(config, tmp_path, FakeClient(_docs_mr()), factory, lambda d: None, mr_iid=7)
+    code = review(config, tmp_path, FakeClient(_docs_mr()), factory, lambda d, *_: None, mr_iid=7)
 
     assert factory.calls == []
     assert code == 0
@@ -655,7 +655,7 @@ def test_one_code_file_brings_the_model_back(tmp_path):
     config = make_config(skip_paths=("*.md",))
     factory = RecordingReviewerFactory()
 
-    review(config, tmp_path, FakeClient(mr), factory, lambda d: None, mr_iid=7)
+    review(config, tmp_path, FakeClient(mr), factory, lambda d, *_: None, mr_iid=7)
 
     # Оба файла: пропускается прогон целиком или не пропускается вовсе.
     # Выбрасывать .md из диффа с кодом нельзя — README нередко и есть то место,
@@ -675,7 +675,7 @@ def test_every_llm_finding_logs_its_read_record_even_when_dropped(tmp_path, caps
     kept = dataclasses.replace(finding(), reads=(Read("read_file", "a.go", 1, 3),))
     low = dataclasses.replace(finding(), file="b.go", confidence="low", reads=())
     review(make_config(), tmp_path, FakeClient(make_mr()), lambda model: FakeReviewer([kept, low]),
-           lambda d: None, mr_iid=7)
+           lambda d, *_: None, mr_iid=7)
     out = capsys.readouterr().out
     assert f"AI review: чтения находки fp={kept.fingerprint} [bug] a.go:2 — v=1;read=a.go:1-3;grep=;list=" in out
     assert f"AI review: чтения находки fp={low.fingerprint} [bug] b.go:2 — v=1;read=;grep=;list=" in out
@@ -683,7 +683,7 @@ def test_every_llm_finding_logs_its_read_record_even_when_dropped(tmp_path, caps
 
 def test_finding_without_a_record_logs_no_read_line(tmp_path, capsys):
     review(make_config(), tmp_path, FakeClient(make_mr()), lambda model: FakeReviewer([finding()]),
-           lambda d: None, mr_iid=7)
+           lambda d, *_: None, mr_iid=7)
     assert "чтения находки" not in capsys.readouterr().out
 
 
@@ -692,7 +692,7 @@ def test_log_keeps_the_full_record_even_when_the_thread_copy_is_bounded(tmp_path
     reads = tuple(Read("grep", f"pkg{i:04d}/file_with_a_long_name_{i:04d}.go", 7, 7) for i in range(3000))
     big = dataclasses.replace(finding(), reads=reads)
     review(make_config(), tmp_path, FakeClient(make_mr()), lambda model: FakeReviewer([big]),
-           lambda d: None, mr_iid=7)
+           lambda d, *_: None, mr_iid=7)
     out = capsys.readouterr().out
     assert "pkg2999/file_with_a_long_name_2999.go:7" in out
     assert "grep_dropped" not in out
@@ -727,7 +727,7 @@ def test_a_generated_file_does_not_count_against_the_size_limit(tmp_path):
     factory = RecordingReviewerFactory()
 
     code = review(config, tmp_path, FakeClient(_generated_and_code_mr()), factory,
-                  lambda d: None, mr_iid=7)
+                  lambda d, *_: None, mr_iid=7)
 
     assert code != EXIT_TOO_LARGE
     assert factory.calls == [("m", ("scripts/build.py",))]
@@ -736,7 +736,7 @@ def test_a_generated_file_does_not_count_against_the_size_limit(tmp_path):
 def test_a_generated_file_is_named_in_the_log_rather_than_dropped_quietly(tmp_path, capsys):
     config = make_config(generated_paths=("docs/shared/roles.json",))
     review(config, tmp_path, FakeClient(_generated_and_code_mr()),
-           RecordingReviewerFactory(), lambda d: None, mr_iid=7)
+           RecordingReviewerFactory(), lambda d, *_: None, mr_iid=7)
 
     assert "docs/shared/roles.json" in capsys.readouterr().err
 
@@ -750,7 +750,7 @@ def test_a_diff_of_generated_files_only_needs_no_model(tmp_path):
                          limits=Limits(max_changed_lines=100))
     factory = RecordingReviewerFactory()
 
-    code = review(config, tmp_path, FakeClient(mr), factory, lambda d: None, mr_iid=7)
+    code = review(config, tmp_path, FakeClient(mr), factory, lambda d, *_: None, mr_iid=7)
 
     assert code == EXIT_CLEAN
     assert factory.calls == []
@@ -767,7 +767,7 @@ def test_an_empty_diff_is_not_mistaken_for_a_generated_only_one(tmp_path, capsys
     config = make_config(generated_paths=("docs/shared/roles.json",))
 
     review(config, tmp_path, FakeClient(mr), RecordingReviewerFactory(),
-           lambda d: None, mr_iid=7)
+           lambda d, *_: None, mr_iid=7)
 
     assert "не ревьюируются" not in capsys.readouterr().err
 
@@ -791,7 +791,7 @@ def test_a_generated_file_alongside_a_docs_only_diff_still_skips_the_run(tmp_pat
                          limits=Limits(max_changed_lines=100))
     factory = RecordingReviewerFactory()
 
-    code = review(config, tmp_path, FakeClient(mr), factory, lambda d: None, mr_iid=7)
+    code = review(config, tmp_path, FakeClient(mr), factory, lambda d, *_: None, mr_iid=7)
 
     assert code == EXIT_CLEAN
     assert factory.calls == []
@@ -814,5 +814,5 @@ def test_each_pass_tells_its_loop_how_many_files_it_reviews(tmp_path):
         ),
     )
     config = make_config(model="weak", model_high_risk="strong", high_risk_paths=("internal/billing/**",))
-    review(config, tmp_path, FakeClient(mr), make_reviewer, lambda d: None, mr_iid=7)
+    review(config, tmp_path, FakeClient(mr), make_reviewer, lambda d, *_: None, mr_iid=7)
     assert [(model, reviewer.changed_files) for model, reviewer in reviewers] == [("strong", 1), ("weak", 2)]

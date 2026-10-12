@@ -161,3 +161,14 @@ def test_without_a_current_finding_the_conversation_is_as_before():
     user = provider.messages[1]["content"]
     assert "<замечание_на_текущем_коммите>" not in user
     assert "<код_на_текущем_коммите>" not in user
+
+
+def test_code_outside_the_checkout_is_never_read(tmp_path):
+    from reviewer.__main__ import _excerpt
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (tmp_path / "secret.txt").write_text("token\n")
+    escaping = _finding(1, "t")
+    escaping = Finding(**{**escaping.__dict__, "file": "../secret.txt"})
+    assert _excerpt(repo, escaping) is None
