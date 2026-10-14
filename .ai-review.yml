@@ -25,8 +25,21 @@ high_risk_paths:
   - reviewer/tools.py
 
 limits:
+  # max_changed_lines raised from 3000 on 2026-10-15. Pushes now go to a merge request
+  # only when the branch is ready (_tools/README.md, "Пуши в merge request"),
+  # so more work lands in one merge request; at the old limit the reviewer
+  # would refuse it (exit 3, blocking) and force a split - more merge requests,
+  # more pipelines. Over 15.09-15.10 the median merge request added 255-319
+  # lines and 29 of 608 passed 2000; 6000 is twice the largest ordinary one.
+  # Counted: added lines only, generated_paths excluded.
+  #
+  # The file limit stays at 60. A pass gets one step per file beyond ten,
+  # capped at 45 (reviewer/llm/loop.py, MAX_ITERATIONS): more files than that
+  # are not read better, only thinner - jobbytime-go !340 spent all its steps
+  # reading forty files and submitted nothing. Lines raise the cost of what is
+  # read; files raise what goes unread.
   max_files: 60
-  max_changed_lines: 3000
+  max_changed_lines: 6000
 
 pricing:
   gpt-5.4-mini-2026-03-17:
