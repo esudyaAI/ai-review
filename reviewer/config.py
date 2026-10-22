@@ -3,16 +3,44 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Mapping
 
 import yaml
 
 
 class ConfigError(Exception):
     """Raised when .ai-review.yml contains unusable values."""
+
+
+SUPPORTED_PROVIDERS = frozenset({"openai", "anthropic"})
+
+# Models a provider gets when the group switch moves a repository to it without
+# naming models. The repositories' own .ai-review.yml name OpenAI models, which
+# mean nothing to Anthropic, so the switch has to bring its own.
+#
+# Sonnet for the ordinary half of a diff, Opus for the high-risk half - chosen
+# 2026-10-22 for the prepaid Claude budget that ends on 2026-10-31.
+DEFAULT_MODELS = {
+    "anthropic": ("claude-sonnet-5-5", "claude-opus-5-5"),
+}
+
+# USD per million tokens, from platform.claude.com/docs/en/about-claude/pricing,
+# read 2026-10-22. "cache_write" is the 5-minute cache write; "cached_input" is a
+# cache hit. Built in because the repositories price only their OpenAI models,
+# and a switched run would otherwise report every Claude call as unpriced -
+# while the reason to switch is to spend a fixed budget and watch it.
+#
+# Haiku's price here is its tier for prompts up to 100K tokens; above that it is
+# five times higher. Haiku is not used by default, so the line under-prices
+# only a run that chose it explicitly and sent a long prompt.
+BUILTIN_PRICING: dict[str, dict[str, float]] = {
+    "claude-opus-5-5": {"input": 4.00, "output": 20.00, "cached_input": 0.20, "cache_write": 5.00},
+    "claude-sonnet-5-5": {"input": 2.00, "output": 10.00, "cached_input": 0.10, "cache_write": 2.50},
+    "claude-haiku-5-5": {"input": 0.10, "output": 0.50, "cached_input": 0.01, "cache_write": 0.125},
+}
 
 
 @dataclass(frozen=True)
@@ -83,7 +111,7 @@ class Config:
     pricing: dict[str, dict[str, float]] = field(default_factory=dict)
 
     def validate(self) -> "Config":
-        if self.provider != "openai":
+        if self.provider not in SUPPORTED_PROVIDERS:
             raise ConfigError(f"unsupported provider: {self.provider}")
         if not self.model:
             raise ConfigError("model must not be empty")
@@ -218,3 +246,43 @@ def load_config(path: Path) -> Config:
         pricing=raw.get("pricing") or {},
     )
     return config.validate()
+
+
+def apply_env_overrides(config: Config, env: Mapping[str, str]) -> Config:
+    """The repository's config, moved to another provider by CI variables.
+
+    AI_REVIEW_PROVIDER is meant to be set on the GitLab group: one variable moves
+    every repository at once and back again, with no merge request per
+    repository. AI_REVIEW_MODEL and AI_REVIEW_MODEL_HIGH_RISK name the models;
+    without them a provider other than the repository's gets DEFAULT_MODELS.
+
+    An empty variable is the same as an absent one, so returning to OpenAI does
+    not depend on whether the variable was deleted or emptied. Everything that
+    is not about the model - paths, limits, test command - stays as the
+    repository wrote it.
+    """
+    provider = (env.get("AI_REVIEW_PROVIDER") or "").strip()
+    if not provider:
+        return config
+    if provider not in SUPPORTED_PROVIDERS:
+        raise ConfigError(f"unsupported provider in AI_REVIEW_PROVIDER: {provider}")
+
+    if provider == config.provider:
+        default_model, default_high_risk = config.model, config.model_high_risk
+    elif provider in DEFAULT_MODELS:
+        default_model, default_high_risk = DEFAULT_MODELS[provider]
+    else:
+        # Switching *to* openai from a repository written for another provider:
+        # there is no OpenAI model to guess, so the variables must name one.
+        default_model, default_high_risk = "", ""
+
+    model = (env.get("AI_REVIEW_MODEL") or "").strip() or default_model
+    model_high_risk = (env.get("AI_REVIEW_MODEL_HIGH_RISK") or "").strip() or default_high_risk
+    return replace(
+        config,
+        provider=provider,
+        model=model,
+        model_high_risk=model_high_risk,
+        # Repository prices win: a repository that priced a model knows better.
+        pricing={**BUILTIN_PRICING, **config.pricing},
+    ).validate()
