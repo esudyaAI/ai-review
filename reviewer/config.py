@@ -36,11 +36,32 @@ DEFAULT_MODELS = {
 # Haiku's price here is its tier for prompts up to 100K tokens; above that it is
 # five times higher. Haiku is not used by default, so the line under-prices
 # only a run that chose it explicitly and sent a long prompt.
+#
+# The OpenAI rows are from developers.openai.com/api/docs/models/<model>, read
+# 2026-10-22, standard tier. They exist to fill keys a repository left out: all
+# three priced gpt-5.4-mini without cached_input, so its cached tokens (~85 % of
+# the prompt) were billed at the full input rate in the cost line. Above 272K
+# tokens in one prompt gpt-5.5 costs 2x input and 1.5x output; the line does
+# not model that tier.
 BUILTIN_PRICING: dict[str, dict[str, float]] = {
     "claude-opus-5-5": {"input": 4.00, "output": 20.00, "cached_input": 0.20, "cache_write": 5.00},
     "claude-sonnet-5-5": {"input": 2.00, "output": 10.00, "cached_input": 0.10, "cache_write": 2.50},
     "claude-haiku-5-5": {"input": 0.10, "output": 0.50, "cached_input": 0.01, "cache_write": 0.125},
+    "gpt-5.4-mini-2026-03-17": {"input": 0.75, "output": 4.50, "cached_input": 0.075},
+    "gpt-5.5-2026-04-23": {"input": 5.00, "output": 30.00, "cached_input": 0.50},
 }
+
+
+def _fill_price_keys(pricing: dict[str, dict[str, float]]) -> dict[str, dict[str, float]]:
+    """The repository's prices with keys it left out filled from BUILTIN_PRICING.
+
+    A key the repository wrote wins. A model it did not price is not added:
+    filling keys is not inventing entries.
+    """
+    return {
+        model: {**BUILTIN_PRICING.get(model, {}), **(prices or {})}
+        for model, prices in pricing.items()
+    }
 
 
 @dataclass(frozen=True)
@@ -243,7 +264,7 @@ def load_config(path: Path) -> Config:
             max_files=limits_raw.get("max_files", defaults.max_files),
             max_changed_lines=limits_raw.get("max_changed_lines", defaults.max_changed_lines),
         ),
-        pricing=raw.get("pricing") or {},
+        pricing=_fill_price_keys(raw.get("pricing") or {}),
     )
     return config.validate()
 
@@ -283,6 +304,7 @@ def apply_env_overrides(config: Config, env: Mapping[str, str]) -> Config:
         provider=provider,
         model=model,
         model_high_risk=model_high_risk,
-        # Repository prices win: a repository that priced a model knows better.
-        pricing={**BUILTIN_PRICING, **config.pricing},
+        # Repository prices win key by key: a repository that priced a model
+        # knows better; what it left out comes from the built-in table.
+        pricing={**BUILTIN_PRICING, **_fill_price_keys(config.pricing)},
     ).validate()
