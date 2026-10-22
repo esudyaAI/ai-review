@@ -44,10 +44,12 @@ def test_high_risk_path_selects_stronger_model():
 
 
 def test_unsupported_provider_is_rejected():
+    # "anthropic" used to be the example here; it is supported since the Claude
+    # provider landed, so the example is a provider the reviewer does not know.
     with pytest.raises(ConfigError):
         Config(
             test_command="",
-            provider="anthropic",
+            provider="gemini",
             base_url="https://api.openai.com/v1",
             model="m",
             model_high_risk="m",
@@ -285,3 +287,168 @@ def test_without_the_list_nothing_is_generated():
 def test_generated_paths_are_read_from_the_file():
     config = load_config(FIXTURE)
     assert config.generated_paths == ("docs/shared/roles.json",)
+
+
+# --- Claude provider and the group-level switch -----------------------------
+#
+# The switch lives in CI variables, not in .ai-review.yml: one variable on the
+# GitLab group moves all three repositories to Claude and back without a merge
+# request per repository. These tests hold what the variable may and may not do.
+
+from reviewer.config import BUILTIN_PRICING, apply_env_overrides  # noqa: E402
+
+OPENAI_CONFIG = Config(
+    provider="openai",
+    model="gpt-base",
+    model_high_risk="gpt-strong",
+    pricing={"gpt-base": {"input": 1.0, "output": 2.0}},
+)
+
+
+def test_anthropic_provider_is_accepted():
+    Config(provider="anthropic", model="claude-sonnet-5-5").validate()
+
+
+def test_no_switch_variable_leaves_the_repository_config_as_written():
+    config = apply_env_overrides(OPENAI_CONFIG, {})
+    assert config.provider == "openai"
+    assert config.model == "gpt-base"
+    assert config.model_high_risk == "gpt-strong"
+
+
+def test_an_empty_switch_variable_is_the_same_as_none():
+    # A variable deleted in the UI and one left with an empty value must behave
+    # alike: returning to OpenAI on November 1 must not depend on which was done.
+    config = apply_env_overrides(OPENAI_CONFIG, {"AI_REVIEW_PROVIDER": "  "})
+    assert config.provider == "openai"
+    assert config.model == "gpt-base"
+
+
+def test_switching_to_anthropic_replaces_the_openai_model_names():
+    # The repository's model names are OpenAI's. Sent to Anthropic they would be
+    # a 404 on every run, so the switch brings its own models.
+    config = apply_env_overrides(OPENAI_CONFIG, {"AI_REVIEW_PROVIDER": "anthropic"})
+    assert config.provider == "anthropic"
+    assert config.model == "claude-sonnet-5-5"
+    assert config.model_high_risk == "claude-opus-5-5"
+
+
+def test_model_variables_win_over_the_defaults():
+    config = apply_env_overrides(
+        OPENAI_CONFIG,
+        {
+            "AI_REVIEW_PROVIDER": "anthropic",
+            "AI_REVIEW_MODEL": "claude-haiku-5-5",
+            "AI_REVIEW_MODEL_HIGH_RISK": "claude-sonnet-5-5",
+        },
+    )
+    assert config.model == "claude-haiku-5-5"
+    assert config.model_high_risk == "claude-sonnet-5-5"
+
+
+def test_the_switch_keeps_everything_that_is_not_about_the_model():
+    base = Config(
+        provider="openai",
+        model="gpt-base",
+        high_risk_paths=("reviewer/gate.py",),
+        skip_paths=("docs/**",),
+        limits=Limits(max_files=7, max_changed_lines=70),
+    )
+    config = apply_env_overrides(base, {"AI_REVIEW_PROVIDER": "anthropic"})
+    assert config.high_risk_paths == ("reviewer/gate.py",)
+    assert config.skip_paths == ("docs/**",)
+    assert config.limits == Limits(max_files=7, max_changed_lines=70)
+
+
+def test_an_unknown_provider_in_the_variable_is_rejected():
+    with pytest.raises(ConfigError):
+        apply_env_overrides(OPENAI_CONFIG, {"AI_REVIEW_PROVIDER": "gemini"})
+
+
+def test_claude_prices_are_built_in_so_the_cost_line_is_not_unknown():
+    # The repositories price only their OpenAI models. Without built-in prices a
+    # switched run would print "стоимость неизвестна" for every Claude call, and
+    # the whole point of the switch is to watch a fixed budget being spent.
+    config = apply_env_overrides(OPENAI_CONFIG, {"AI_REVIEW_PROVIDER": "anthropic"})
+    assert config.pricing["claude-sonnet-5-5"] == BUILTIN_PRICING["claude-sonnet-5-5"]
+    assert config.pricing["claude-opus-5-5"] == BUILTIN_PRICING["claude-opus-5-5"]
+    # The OpenAI prices stay: the fallback reports its tokens under them.
+    assert config.pricing["gpt-base"] == {"input": 1.0, "output": 2.0}
+
+
+def test_repository_prices_win_over_built_in_ones_key_by_key():
+    # A key the repository wrote wins; a key it left out comes from the built-in
+    # table (2026-10-22, decided for gpt-5.4-mini's missing cached_input).
+    base = Config(
+        provider="openai",
+        model="gpt-base",
+        pricing={"claude-sonnet-5-5": {"input": 9.0, "output": 9.0}},
+    )
+    config = apply_env_overrides(base, {"AI_REVIEW_PROVIDER": "anthropic"})
+    assert config.pricing["claude-sonnet-5-5"] == {
+        "input": 9.0, "output": 9.0, "cached_input": 0.10, "cache_write": 2.50,
+    }
+
+
+def test_a_price_key_missing_in_the_repository_is_filled_on_load(tmp_path):
+    # All three repositories priced gpt-5.4-mini without cached_input, so its
+    # cached tokens (~85% of the prompt) were billed at the full input rate in
+    # the cost line. Filling the key here fixes all three without a merge
+    # request each - every run reads its prices through load_config.
+    path = tmp_path / ".ai-review.yml"
+    path.write_text(
+        "model: gpt-5.4-mini-2026-03-17\n"
+        "pricing:\n"
+        "  gpt-5.4-mini-2026-03-17:\n"
+        "    input: 0.75\n"
+        "    output: 4.50\n",
+        encoding="utf-8",
+    )
+    config = load_config(path)
+    assert config.pricing["gpt-5.4-mini-2026-03-17"] == {
+        "input": 0.75, "output": 4.50, "cached_input": 0.075,
+    }
+
+
+def test_a_price_key_the_repository_wrote_is_kept_on_load(tmp_path):
+    path = tmp_path / ".ai-review.yml"
+    path.write_text(
+        "model: gpt-5.4-mini-2026-03-17\n"
+        "pricing:\n"
+        "  gpt-5.4-mini-2026-03-17:\n"
+        "    input: 0.75\n"
+        "    output: 4.50\n"
+        "    cached_input: 0.30\n",
+        encoding="utf-8",
+    )
+    assert load_config(path).pricing["gpt-5.4-mini-2026-03-17"]["cached_input"] == 0.30
+
+
+def test_a_model_the_repository_did_not_price_is_not_added_on_load(tmp_path):
+    # Filling keys is not inventing entries: an OpenAI run's report lists only
+    # the models that ran, and built-in Claude prices change nothing there.
+    path = tmp_path / ".ai-review.yml"
+    path.write_text("model: m\n", encoding="utf-8")
+    assert "gpt-5.4-mini-2026-03-17" not in load_config(path).pricing
+
+
+def test_built_in_openai_prices_match_the_published_model_pages():
+    # developers.openai.com/api/docs/models/gpt-5.4-mini and .../gpt-5.5,
+    # read 2026-10-22, standard tier, prompts up to 272K tokens.
+    assert BUILTIN_PRICING["gpt-5.4-mini-2026-03-17"] == {
+        "input": 0.75, "output": 4.50, "cached_input": 0.075,
+    }
+    assert BUILTIN_PRICING["gpt-5.5-2026-04-23"] == {
+        "input": 5.00, "output": 30.00, "cached_input": 0.50,
+    }
+
+
+def test_built_in_claude_prices_match_the_published_table():
+    # Copied from platform.claude.com/docs/en/about-claude/pricing on 2026-10-22,
+    # USD per million tokens. A change of price is a change of this test.
+    assert BUILTIN_PRICING["claude-sonnet-5-5"] == {
+        "input": 2.00, "output": 10.00, "cached_input": 0.10, "cache_write": 2.50,
+    }
+    assert BUILTIN_PRICING["claude-opus-5-5"] == {
+        "input": 4.00, "output": 20.00, "cached_input": 0.20, "cache_write": 5.00,
+    }

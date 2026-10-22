@@ -28,16 +28,25 @@ class OpenAIProvider:
         # one tracker; without this their tokens cannot be told apart afterwards.
         self._phase = phase
 
-    def complete(self, messages: list[dict], tools: list[dict]) -> ProviderResponse:
+    def complete(
+        self, messages: list[dict], tools: list[dict], required_tool: str | None = None
+    ) -> ProviderResponse:
         # A plain-text answer has no meaning in our protocol: the model must always
         # either call a read tool or submit_findings. tool_choice="required" enforces
         # that at the API level instead of relying on the model to follow the prompt.
+        # A named tool is forced by name - with the tool list unchanged, so the
+        # prompt prefix and its cache stay the same as on every other step.
+        tool_choice = (
+            {"type": "function", "function": {"name": required_tool}}
+            if required_tool
+            else "required"
+        )
         try:
             response = self._client.chat.completions.create(
                 model=self._model,
                 messages=messages,
                 tools=tools,
-                tool_choice="required",
+                tool_choice=tool_choice,
             )
         except BadRequestError as exc:
             # Not every OpenAI-compatible backend supports tool_choice="required" -

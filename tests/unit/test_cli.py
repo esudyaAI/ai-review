@@ -816,3 +816,78 @@ def test_each_pass_tells_its_loop_how_many_files_it_reviews(tmp_path):
     config = make_config(model="weak", model_high_risk="strong", high_risk_paths=("internal/billing/**",))
     review(config, tmp_path, FakeClient(mr), make_reviewer, lambda d, *_: None, mr_iid=7)
     assert [(model, reviewer.changed_files) for model, reviewer in reviewers] == [("strong", 1), ("weak", 2)]
+
+
+def test_a_switched_run_without_the_anthropic_key_is_a_technical_error(tmp_path, monkeypatch, capsys):
+    # The group variable moved the run to Claude, but the key was not added (or
+    # was added as Protected, which merge request pipelines do not see). That is
+    # a configuration problem to fix, named in the log - not a verdict.
+    (tmp_path / ".ai-review.yml").write_text("model: gpt-base\n", encoding="utf-8")
+    monkeypatch.setenv("CI_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("AI_REVIEW_PROVIDER", "anthropic")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    code = main(["review", "--mr", "7"])
+
+    assert code == EXIT_TECHNICAL
+    assert "ANTHROPIC_API_KEY" in capsys.readouterr().err
+
+
+def _switched_env(monkeypatch, tmp_path):
+    (tmp_path / ".ai-review.yml").write_text("model: gpt-base\n", encoding="utf-8")
+    for key, value in {
+        "CI_PROJECT_DIR": str(tmp_path),
+        "OPENAI_API_KEY": "sk-test",
+        "ANTHROPIC_API_KEY": "ak-test",
+        "CI_API_V4_URL": "https://gitlab.invalid/api/v4",
+        "AI_REVIEW_GITLAB_TOKEN": "t",
+        "CI_PROJECT_ID": "1",
+        "AI_REVIEW_ALERT_HEARTBEAT_URL": "https://hb.invalid/x",
+    }.items():
+        monkeypatch.setenv(key, value)
+
+
+def _wire(monkeypatch, provider_value, trip):
+    import reviewer.__main__ as entry
+
+    reported = []
+    monkeypatch.setattr(
+        entry, "report_provider_health",
+        lambda url, switch, env, **kw: reported.append((url, switch.tripped)),
+    )
+
+    def fake_factory(config, repo_config, env, tracker, switch=None):
+        def make(model, phase="review"):
+            if trip and switch is not None:
+                switch.tripped = True
+                switch.reason = "X"
+            return provider_value
+        return make
+
+    monkeypatch.setattr(entry, "provider_factory", fake_factory)
+    monkeypatch.setattr(
+        entry, "review",
+        lambda config, repo, client, make_reviewer, adjudicator, mr, on_loop=None: (make_reviewer(config.model), 0)[1],
+    )
+    return reported
+
+
+def test_a_switched_run_reports_provider_health_with_the_runs_switch(tmp_path, monkeypatch):
+    _switched_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("AI_REVIEW_PROVIDER", "anthropic")
+    reported = _wire(monkeypatch, object(), trip=True)
+
+    assert main(["review", "--mr", "7"]) == 0
+    assert reported == [("https://hb.invalid/x", True)]
+
+
+def test_an_openai_run_reports_nothing(tmp_path, monkeypatch):
+    # The heartbeat watches Claude; an OpenAI run has no news for it, and a GET
+    # from it would resolve a Claude incident that is still real.
+    _switched_env(monkeypatch, tmp_path)
+    monkeypatch.delenv("AI_REVIEW_PROVIDER", raising=False)
+    reported = _wire(monkeypatch, object(), trip=False)
+
+    assert main(["review", "--mr", "7"]) == 0
+    assert reported == []

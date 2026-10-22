@@ -42,9 +42,14 @@ limits:
   max_changed_lines: 6000
 
 pricing:
+  # cached_input from developers.openai.com/api/docs/models/gpt-5.4-mini,
+  # read 2026-10-22. Without it cached tokens were priced at the full input
+  # rate, and with ~85% of the prompt cached the cost line overstated a run
+  # roughly fourfold.
   gpt-5.4-mini-2026-03-17:
     input: 0.75
     output: 4.50
+    cached_input: 0.075
   gpt-5.5-2026-04-23:
     input: 5.00
     output: 30.00

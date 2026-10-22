@@ -1,4 +1,4 @@
-"""Token usage and cost accounting, shared across every OpenAIProvider instance
+"""Token usage and cost accounting, shared across every provider instance
 within a single review run (the CLI creates one tracker in main() and passes it
 into every provider the run creates, so usage accumulates across the main review
 pass and any adjudication calls).
@@ -25,6 +25,10 @@ class ModelUsage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cached_tokens: int = 0
+    # Tokens written to the prompt cache. Anthropic bills them at 1.25x input and
+    # reports them apart from reads; OpenAI has no such charge and leaves this 0.
+    # Like cached_tokens, they are part of prompt_tokens, not on top of it.
+    cache_write_tokens: int = 0
 
 
 class UsageTracker:
@@ -39,12 +43,14 @@ class UsageTracker:
         completion_tokens: int,
         cached_tokens: int = 0,
         phase: str = REVIEW_PHASE,
+        cache_write_tokens: int = 0,
     ) -> None:
         for bucket, key in ((self._by_model, model), (self._by_phase, phase)):
             usage = bucket.setdefault(key, ModelUsage())
             usage.prompt_tokens += prompt_tokens
             usage.completion_tokens += completion_tokens
             usage.cached_tokens += cached_tokens
+            usage.cache_write_tokens += cache_write_tokens
 
     def by_model(self) -> dict[str, ModelUsage]:
         return dict(self._by_model)
@@ -60,13 +66,17 @@ def cost_for(model: str, usage: ModelUsage, pricing: dict[str, dict[str, float]]
     if not prices or "input" not in prices or "output" not in prices:
         return None
     # Cached tokens are a subset of prompt_tokens, not additional - OpenAI's usage
-    # reporting counts them within prompt_tokens.
+    # reporting counts them within prompt_tokens. Cache writes are a subset too:
+    # the Anthropic provider folds them into prompt_tokens the same way.
     cached_tokens = min(usage.cached_tokens, usage.prompt_tokens)
-    non_cached_input = usage.prompt_tokens - cached_tokens
+    cache_write_tokens = min(usage.cache_write_tokens, usage.prompt_tokens - cached_tokens)
+    non_cached_input = usage.prompt_tokens - cached_tokens - cache_write_tokens
     cached_price = prices.get("cached_input", prices["input"])
+    cache_write_price = prices.get("cache_write", prices["input"])
     cost = (
         non_cached_input * prices["input"]
         + cached_tokens * cached_price
+        + cache_write_tokens * cache_write_price
         + usage.completion_tokens * prices["output"]
     )
     return cost / 1_000_000
@@ -134,10 +144,12 @@ def report_lines(
     stderr_warnings: list[str] = []
     for model, usage in by_model.items():
         cost = cost_for(model, usage, pricing)
+        # Named only when present, so an OpenAI line keeps its shape.
+        writes = f", запись в кеш {usage.cache_write_tokens}" if usage.cache_write_tokens else ""
         if cost is None:
             stdout_lines.append(
                 f"AI review: {model} — вход {usage.prompt_tokens} токенов "
-                f"(из них кеш {usage.cached_tokens}), выход {usage.completion_tokens} токенов, "
+                f"(из них кеш {usage.cached_tokens}{writes}), выход {usage.completion_tokens} токенов, "
                 "стоимость неизвестна (нет цены в pricing)"
             )
             stderr_warnings.append(
@@ -147,7 +159,7 @@ def report_lines(
         else:
             stdout_lines.append(
                 f"AI review: {model} — вход {usage.prompt_tokens} токенов "
-                f"(из них кеш {usage.cached_tokens}), выход {usage.completion_tokens} токенов, "
+                f"(из них кеш {usage.cached_tokens}{writes}), выход {usage.completion_tokens} токенов, "
                 f"стоимость ${cost:.4f}"
             )
 

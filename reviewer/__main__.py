@@ -10,18 +10,19 @@ from pathlib import Path
 import httpx
 
 from reviewer.adjudication import adjudicate, describe_current
+from reviewer.alert import report_provider_health
 from reviewer.findings import BOT_NOTE_MARKER
-from reviewer.config import load_config
+from reviewer.config import apply_env_overrides, load_config
 from reviewer.deterministic import run_deterministic
 from reviewer.diff import DiffTooLarge, check_limits
 from reviewer.findings import keep_blocking
 from reviewer.gate import decide
 from reviewer.gitlab_client import GitLabClient
+from reviewer.llm.factory import provider_factory
+from reviewer.llm.fallback import FallbackSwitch
 from reviewer.llm.loop import ReviewIncomplete, ReviewLoop
-from reviewer.llm.openai_provider import OpenAIProvider
 from reviewer.llm.usage import (
     ADJUDICATION_PHASE,
-    REVIEW_PHASE,
     UsageTracker,
     merge_loop_stats,
     report_lines,
@@ -393,18 +394,21 @@ def main(argv: list[str] | None = None) -> int:
 def _run(args) -> int:
     try:
         repo = Path(os.environ.get("CI_PROJECT_DIR", "."))
-        config = load_config(repo / ".ai-review.yml")
-        api_key = os.environ["OPENAI_API_KEY"]
-        usage_tracker = UsageTracker()
-
-        def make_provider(model: str, phase: str = REVIEW_PHASE) -> OpenAIProvider:
-            return OpenAIProvider(
-                api_key=api_key,
-                base_url=config.base_url,
-                model=model,
-                usage_tracker=usage_tracker,
-                phase=phase,
+        repo_config = load_config(repo / ".ai-review.yml")
+        # AI_REVIEW_PROVIDER on the GitLab group moves every repository to another
+        # provider at once; repo_config stays as written for the OpenAI fallback.
+        config = apply_env_overrides(repo_config, os.environ)
+        if config.provider != repo_config.provider:
+            print(
+                f"AI review: провайдер {config.provider} из AI_REVIEW_PROVIDER "
+                f"(модели {config.model} / {config.model_high_risk or config.model})"
             )
+        usage_tracker = UsageTracker()
+        # One switch for the whole run: once Claude is known to be unavailable,
+        # neither review half nor adjudication asks it again, and the health
+        # report below reads what happened from it.
+        switch = FallbackSwitch()
+        make_provider = provider_factory(config, repo_config, os.environ, usage_tracker, switch)
 
         client = GitLabClient(
             api_url=os.environ["CI_API_V4_URL"],
@@ -414,15 +418,25 @@ def _run(args) -> int:
         )
         tools = RepoTools(root=repo)
         loops: list[ReviewLoop] = []
-        code = review(
-            config,
-            repo,
-            client,
-            lambda model: ReviewLoop(make_provider(model), tools),
-            _adjudicator_for(config, make_provider),
-            args.mr,
-            on_loop=loops.append,
-        )
+        try:
+            code = review(
+                config,
+                repo,
+                client,
+                lambda model: ReviewLoop(make_provider(model), tools),
+                _adjudicator_for(config, make_provider),
+                args.mr,
+                on_loop=loops.append,
+            )
+        finally:
+            # Also when review() raised: a fallback that happened before the
+            # crash is still news. Only switched runs report - the heartbeat
+            # watches Claude, and a ping from an OpenAI run would resolve a
+            # Claude incident that is still real.
+            if config.provider == "anthropic":
+                report_provider_health(
+                    os.environ.get("AI_REVIEW_ALERT_HEARTBEAT_URL", ""), switch, os.environ
+                )
         stdout_lines, stderr_warnings = report_lines(
             usage_tracker.by_model(),
             config.pricing,
