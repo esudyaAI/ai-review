@@ -51,6 +51,12 @@ DEFAULT_MAX_TOKENS = 16_000
 DEFAULT_TIMEOUT = 300.0
 
 
+# Models that accept thinking {"type": "between_tools"} - the lowest thinking
+# setting on Sonnet 5.5. Opus 5.5, Haiku 5.5 and the rest answer it with a 400
+# (platform.claude.com/docs/en/build-with-claude/thinking, read 2026-10-22).
+BETWEEN_TOOLS_SUPPORTED = ("claude-sonnet-5-5",)
+
+
 def _supports_forced_tool_choice(model: str) -> bool:
     return not model.startswith(FORCED_TOOL_CHOICE_UNSUPPORTED)
 
@@ -159,18 +165,25 @@ class AnthropicProvider:
         phase: str = REVIEW_PHASE,
         client=None,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        thinking: str | None = None,
     ) -> None:
         self._client = client or Anthropic(api_key=api_key, timeout=timeout, max_retries=3)
         self._model = model
         self._usage_tracker = usage_tracker
         self._phase = phase
         self._max_tokens = max_tokens
+        # None leaves the model's default (adaptive thinking). "between_tools"
+        # turns off up-front thinking on Sonnet 5.5 and is the lever for output
+        # spend; it is not sent to a model that would reject it.
+        self._thinking = thinking
         # Response blocks by tool call id, replayed when the loop sends that
         # assistant message again. Lives as long as the provider, which is one
         # review pass or one adjudication.
         self._raw_by_call_id: dict[str, list[dict]] = {}
 
-    def complete(self, messages: list[dict], tools: list[dict]) -> ProviderResponse:
+    def complete(
+        self, messages: list[dict], tools: list[dict], required_tool: str | None = None
+    ) -> ProviderResponse:
         system, converted = to_anthropic_messages(messages, self._raw_by_call_id)
         request = {
             "model": self._model,
@@ -182,11 +195,20 @@ class AnthropicProvider:
         }
         if system:
             request["system"] = system
+        if self._thinking == "between_tools" and self._model.startswith(BETWEEN_TOOLS_SUPPORTED):
+            request["thinking"] = {"type": "between_tools"}
         forced = False
         if tools:
             request["tools"] = to_anthropic_tools(tools)
             forced = _supports_forced_tool_choice(self._model)
-            request["tool_choice"] = {"type": "any"} if forced else {"type": "auto"}
+            if not forced:
+                # A required tool cannot be forced here; the loop's reminder in
+                # the conversation asks for it, and the tool list stays the same.
+                request["tool_choice"] = {"type": "auto"}
+            elif required_tool:
+                request["tool_choice"] = {"type": "tool", "name": required_tool}
+            else:
+                request["tool_choice"] = {"type": "any"}
 
         try:
             response = self._client.messages.create(**request)
@@ -194,7 +216,8 @@ class AnthropicProvider:
             if not forced or "tool_choice" not in str(exc):
                 raise
             print(
-                f"AI review: провайдер отклонил tool_choice=any ({exc}), повтор с auto",
+                f"AI review: провайдер отклонил tool_choice={request['tool_choice']['type']} "
+                f"({exc}), повтор с auto",
                 file=sys.stderr,
             )
             request["tool_choice"] = {"type": "auto"}

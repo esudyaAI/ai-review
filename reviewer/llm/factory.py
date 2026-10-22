@@ -61,6 +61,9 @@ def provider_factory(
     from reviewer.llm.anthropic_provider import AnthropicProvider
 
     openai_key = env.get("OPENAI_API_KEY") or ""
+    # AI_REVIEW_THINKING=between_tools: the output-spend lever for Sonnet,
+    # switched on the group like the provider itself, no merge request needed.
+    thinking = (env.get("AI_REVIEW_THINKING") or "").strip() or None
     can_fall_back = bool(openai_key) and repo_config.provider == "openai" and bool(repo_config.model)
     switch = switch or FallbackSwitch()
 
@@ -78,6 +81,7 @@ def provider_factory(
             model=model,
             usage_tracker=usage_tracker,
             phase=phase,
+            thinking=thinking,
         )
         fallback_model = fallback_model_for(model)
         make_fallback = None

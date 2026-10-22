@@ -30,8 +30,17 @@ MAX_ITERATIONS = 45
 
 BUDGET_EXHAUSTED_REMINDER = (
     "Бюджет шагов исчерпан. Сдай вердикт сейчас через submit_findings — по тому, "
-    "что уже прочитал. Других инструментов на этом шаге нет."
+    "что уже прочитал. Другие инструменты на этом шаге не выполняются."
 )
+
+# The answer to a read made on the last step instead of the verdict. Not served:
+# the budget is spent, and reading on would only grow the bill.
+FINAL_STEP_REFUSAL = (
+    "Не выполнено: бюджет шагов исчерпан. Вызови submit_findings сейчас — по тому, "
+    "что уже прочитал."
+)
+
+VERDICT_TOOL = "submit_findings"
 
 
 def iteration_budget(changed_files: int) -> int:
@@ -105,20 +114,52 @@ class ReviewLoop:
             else iteration_budget(changed_files or 0)
         )
 
-        for step in range(limit):
-            # The last step offers nothing but the verdict and says so: a pass
-            # that read a lot ends with what it found, not with "never called
-            # submit_findings" and a paid rerun.
-            last = step == limit - 1
-            offered = available
-            if last:
+        # One extra step past the budget, granted only when the last step missed
+        # the verdict. See below.
+        extra_step_granted = False
+        for step in range(limit + 1):
+            if step == limit and not extra_step_granted:
+                break
+            # The last step demands the verdict and says so: a pass that read a
+            # lot ends with what it found, not with "never called submit_findings"
+            # and a paid rerun.
+            #
+            # It demands it through required_tool, with the SAME tool list as every
+            # other step. Until 2026-10-22 the list was narrowed to submit_findings
+            # alone; on Claude any change of tool definitions invalidates the whole
+            # prompt cache, so that one step was paid at full input price over a
+            # conversation of ~300K tokens.
+            last = step >= limit - 1
+            if step == limit - 1:
                 messages.append({"role": "user", "content": BUDGET_EXHAUSTED_REMINDER})
-                offered = [SUBMIT_FINDINGS_TOOL]
             # Counted after the answer, not before it: a provider error would
             # otherwise report a round trip that never happened, and this number
             # exists precisely to explain where the tokens went.
-            response = self._provider.complete(messages, offered)
+            response = self._complete(messages, available, VERDICT_TOOL if last else None)
             self.stats.iterations += 1
+
+            if last and not any(c.name == VERDICT_TOOL for c in response.tool_calls):
+                # A provider that cannot force a tool (Opus/Sonnet 5.5 reject it)
+                # may still read or talk on the last step. One more step, with the
+                # read refused rather than served; a second miss is final.
+                if extra_step_granted:
+                    break
+                # A model that has already been told twice to call a tool and keeps
+                # talking gets no third chance here either: MAX_TEXT_REMINDERS is
+                # the rule, the extra step is not a way around it.
+                if not response.tool_calls and text_reminders >= MAX_TEXT_REMINDERS:
+                    raise ReviewIncomplete(
+                        "model kept answering with plain text instead of calling a tool"
+                    )
+                extra_step_granted = True
+                if response.tool_calls:
+                    messages.append(_assistant_message(response.tool_calls))
+                    for call in response.tool_calls:
+                        messages.append(_tool_message(call.id, FINAL_STEP_REFUSAL))
+                else:
+                    messages.append({"role": "assistant", "content": response.text or ""})
+                    messages.append({"role": "user", "content": FINAL_STEP_REFUSAL})
+                continue
             if not response.tool_calls:
                 if text_reminders >= MAX_TEXT_REMINDERS:
                     raise ReviewIncomplete(
@@ -177,6 +218,13 @@ class ReviewLoop:
                     investigation_calls += 1
 
         raise ReviewIncomplete("model never called submit_findings")
+
+    def _complete(self, messages: list[dict], tools: list[dict], required_tool: str | None):
+        # Passed only when there is something to require, so a provider written
+        # against the two-argument contract keeps working on ordinary steps.
+        if required_tool is None:
+            return self._provider.complete(messages, tools)
+        return self._provider.complete(messages, tools, required_tool=required_tool)
 
     def _serve(self, call: ToolCall) -> str:
         if call.name in INVESTIGATION_TOOL_NAMES:

@@ -157,21 +157,30 @@ def test_loop_fails_when_schema_stays_broken(tools):
 
 
 def test_loop_fails_when_model_never_submits(tools):
+    # Three steps of budget plus the one extra step the last step grants when it
+    # misses the verdict (2026-10-22): four reads without a verdict is the end.
     responses = [
         ProviderResponse(
             tool_calls=(ToolCall(id=f"t{i}", name="list_files", arguments={}),), text=None
         )
-        for i in range(3)
+        for i in range(4)
     ]
     provider = ScriptedProvider(responses)
     with pytest.raises(ReviewIncomplete):
         ReviewLoop(provider, tools, max_iterations=3).run("system", "user")
+    assert len(provider.calls) == 4
 
 
 def test_loop_fails_when_model_answers_with_plain_text(tools):
-    provider = ScriptedProvider([ProviderResponse(tool_calls=(), text="всё хорошо")])
+    # With a budget of one, that step is also the last: text there earns the one
+    # extra step (2026-10-22), and text again ends the review.
+    provider = ScriptedProvider([
+        ProviderResponse(tool_calls=(), text="всё хорошо"),
+        ProviderResponse(tool_calls=(), text="всё ещё хорошо"),
+    ])
     with pytest.raises(ReviewIncomplete):
         ReviewLoop(provider, tools, max_iterations=1).run("system", "user")
+    assert len(provider.calls) == 2
 
 
 def test_loop_recovers_after_one_plain_text_response(tools):

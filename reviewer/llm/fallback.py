@@ -28,6 +28,10 @@ class FallbackSwitch:
 
     tripped: bool = False
     reason: str = ""
+    # Whether the primary answered at least once in this run. Tells "Claude
+    # worked" from "Claude was never asked" (a docs-only merge request makes no
+    # call), which is what the health report needs.
+    primary_answered: bool = False
 
 
 class FallbackProvider:
@@ -53,13 +57,17 @@ class FallbackProvider:
             self._fallback = self._make_fallback()
         return self._fallback
 
-    def complete(self, messages: list[dict], tools: list[dict]) -> ProviderResponse:
+    def complete(
+        self, messages: list[dict], tools: list[dict], required_tool: str | None = None
+    ) -> ProviderResponse:
         if self._switch.tripped:
             fallback = self.build_fallback()
             if fallback is not None:
-                return fallback.complete(messages, tools)
+                return self._call(fallback, messages, tools, required_tool)
         try:
-            return self.primary.complete(messages, tools)
+            response = self._call(self.primary, messages, tools, required_tool)
+            self._switch.primary_answered = True
+            return response
         except self._errors as exc:
             fallback = self.build_fallback()
             if fallback is None:
@@ -72,4 +80,10 @@ class FallbackProvider:
                     f"ревью продолжено на OpenAI ({self._fallback_label})",
                     file=sys.stderr,
                 )
-            return fallback.complete(messages, tools)
+            return self._call(fallback, messages, tools, required_tool)
+
+    @staticmethod
+    def _call(provider: LLMProvider, messages, tools, required_tool):
+        if required_tool is None:
+            return provider.complete(messages, tools)
+        return provider.complete(messages, tools, required_tool=required_tool)
