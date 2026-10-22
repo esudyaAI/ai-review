@@ -816,3 +816,19 @@ def test_each_pass_tells_its_loop_how_many_files_it_reviews(tmp_path):
     config = make_config(model="weak", model_high_risk="strong", high_risk_paths=("internal/billing/**",))
     review(config, tmp_path, FakeClient(mr), make_reviewer, lambda d, *_: None, mr_iid=7)
     assert [(model, reviewer.changed_files) for model, reviewer in reviewers] == [("strong", 1), ("weak", 2)]
+
+
+def test_a_switched_run_without_the_anthropic_key_is_a_technical_error(tmp_path, monkeypatch, capsys):
+    # The group variable moved the run to Claude, but the key was not added (or
+    # was added as Protected, which merge request pipelines do not see). That is
+    # a configuration problem to fix, named in the log - not a verdict.
+    (tmp_path / ".ai-review.yml").write_text("model: gpt-base\n", encoding="utf-8")
+    monkeypatch.setenv("CI_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("AI_REVIEW_PROVIDER", "anthropic")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    code = main(["review", "--mr", "7"])
+
+    assert code == EXIT_TECHNICAL
+    assert "ANTHROPIC_API_KEY" in capsys.readouterr().err

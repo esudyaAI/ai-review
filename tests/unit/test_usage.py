@@ -1,3 +1,5 @@
+import pytest
+
 from reviewer.llm.usage import ModelUsage, UsageTracker, cost_for, report_lines
 
 PRICING = {
@@ -190,3 +192,47 @@ def test_loop_stats_of_nothing_is_none():
     from reviewer.llm.usage import merge_loop_stats
 
     assert merge_loop_stats([]) is None
+
+
+# --- Cache writes (Anthropic) ------------------------------------------------
+#
+# Anthropic bills a cache write at 1.25x the input price and reports it apart
+# from cache reads. Both are part of the prompt; only reads are discounted.
+
+CLAUDE_PRICING = {
+    "claude-sonnet-5-5": {"input": 2.00, "output": 10.00, "cached_input": 0.10, "cache_write": 2.50},
+}
+
+
+def test_tracker_accumulates_cache_writes():
+    tracker = UsageTracker()
+    tracker.record("claude-sonnet-5-5", 1000, 10, cached_tokens=600, cache_write_tokens=300)
+    tracker.record("claude-sonnet-5-5", 1000, 10, cached_tokens=900, cache_write_tokens=50)
+    usage = tracker.by_model()["claude-sonnet-5-5"]
+    assert usage.cache_write_tokens == 350
+    assert usage.cached_tokens == 1500
+
+
+def test_cost_for_prices_cache_writes_at_their_own_rate():
+    usage = ModelUsage(prompt_tokens=1000, completion_tokens=100, cached_tokens=600, cache_write_tokens=300)
+    # 100 plain input @ 2.00 + 600 read @ 0.10 + 300 written @ 2.50 + 100 out @ 10.00
+    expected = (100 * 2.00 + 600 * 0.10 + 300 * 2.50 + 100 * 10.00) / 1_000_000
+    assert cost_for("claude-sonnet-5-5", usage, CLAUDE_PRICING) == pytest.approx(expected)
+
+
+def test_cost_for_prices_cache_writes_at_input_rate_without_a_write_price():
+    usage = ModelUsage(prompt_tokens=1000, completion_tokens=0, cached_tokens=0, cache_write_tokens=400)
+    assert cost_for("m", usage, {"m": {"input": 1.0, "output": 1.0}}) == pytest.approx(1000 / 1_000_000)
+
+
+def test_report_line_names_cache_writes_only_when_there_are_some():
+    with_writes = {"claude-sonnet-5-5": ModelUsage(1000, 10, cached_tokens=600, cache_write_tokens=300)}
+    without = {"gpt-5.4-mini-2026-03-17": ModelUsage(prompt_tokens=1000, completion_tokens=200)}
+
+    claude_line = report_lines(with_writes, CLAUDE_PRICING)[0][0]
+    openai_line = report_lines(without, PRICING)[0][0]
+
+    assert "запись в кеш 300" in claude_line
+    # The OpenAI line is read by people and by the cost measurement scripts;
+    # it does not change shape because another provider exists.
+    assert "запись в кеш" not in openai_line
