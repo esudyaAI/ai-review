@@ -4,22 +4,26 @@ from __future__ import annotations
 
 from typing import Callable, Mapping
 
-import anthropic
-
 from reviewer.config import Config
-from reviewer.llm.anthropic_provider import AnthropicProvider
 from reviewer.llm.base import LLMProvider
 from reviewer.llm.fallback import FallbackProvider, FallbackSwitch
 from reviewer.llm.openai_provider import OpenAIProvider
 from reviewer.llm.usage import REVIEW_PHASE, UsageTracker
 
-# Everything the Anthropic SDK raises about the service rather than about our
-# code: status errors (401 key, 402 billing, 403, 404 model, 429 spend cap,
-# 5xx/529 after the SDK's own retries) and connection failures. A 400 is in
-# here too - spend limits are reported as 400 - so a request bug of ours would
-# also fall back; the log line names the error, and that is what the trial run
-# after each release is for.
-ANTHROPIC_UNAVAILABLE = (anthropic.APIError,)
+# The anthropic package is imported only when a run is switched to Claude.
+#
+# In jobbytime-ai-review itself the ai-review job runs the branch's reviewer/
+# on top of the released image's dependencies, so a branch that adds a
+# dependency is reviewed by an image without it. !36 died on its own gate with
+# "No module named 'anthropic'" - and with exit 1, which reads as findings. An
+# OpenAI run has no use for the package and must not need it.
+#
+# What trips the fallback is anthropic.APIError: everything the SDK raises about
+# the service rather than about our code - status errors (401 key, 402 billing,
+# 403, 404 model, 429 spend cap, 5xx/529 after the SDK's own retries) and
+# connection failures. A 400 is in there too - spend limits are reported as
+# 400 - so a request bug of ours would also fall back; the log line names the
+# error, and that is what the trial run after each release is for.
 
 
 def provider_factory(
@@ -51,6 +55,11 @@ def provider_factory(
         return make_openai
 
     anthropic_key = env["ANTHROPIC_API_KEY"]
+
+    import anthropic
+
+    from reviewer.llm.anthropic_provider import AnthropicProvider
+
     openai_key = env.get("OPENAI_API_KEY") or ""
     can_fall_back = bool(openai_key) and repo_config.provider == "openai" and bool(repo_config.model)
     switch = switch or FallbackSwitch()
@@ -87,7 +96,7 @@ def provider_factory(
             primary,
             make_fallback,
             switch,
-            errors=ANTHROPIC_UNAVAILABLE,
+            errors=(anthropic.APIError,),
             fallback_label=fallback_model,
         )
 
