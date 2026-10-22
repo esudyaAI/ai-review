@@ -337,3 +337,64 @@ def test_usage_counts_cache_reads_and_writes_as_part_of_the_prompt():
     assert usage.cache_write_tokens == 100
     assert usage.completion_tokens == 70
     assert tracker.by_phase()["adjudication"].prompt_tokens == 1050
+
+
+# --- the verdict step and thinking ----------------------------------------------
+
+
+SUBMIT = {
+    "type": "function",
+    "function": {"name": "submit_findings", "description": "Verdict.", "parameters": {"type": "object"}},
+}
+
+
+def test_a_required_tool_on_a_model_that_cannot_be_forced_stays_auto():
+    provider, create = make_provider(model="claude-sonnet-5-5")
+    create.return_value = make_message([{"type": "tool_use", "id": "t", "name": "submit_findings", "input": {}}])
+
+    provider.complete([{"role": "user", "content": "go"}], [READ_FILE, SUBMIT], required_tool="submit_findings")
+
+    kwargs = create.call_args.kwargs
+    assert kwargs["tool_choice"] == {"type": "auto"}
+    # The tool list is the same as on every other step: the cache survives.
+    assert [t["name"] for t in kwargs["tools"]] == ["read_file", "submit_findings"]
+
+
+def test_a_required_tool_on_a_model_that_can_be_forced_is_forced_by_name():
+    provider, create = make_provider(model="claude-haiku-5-5")
+    create.return_value = make_message([{"type": "tool_use", "id": "t", "name": "submit_findings", "input": {}}])
+
+    provider.complete([{"role": "user", "content": "go"}], [READ_FILE, SUBMIT], required_tool="submit_findings")
+
+    assert create.call_args.kwargs["tool_choice"] == {"type": "tool", "name": "submit_findings"}
+
+
+def test_between_tools_thinking_is_sent_to_sonnet():
+    # platform.claude.com/docs/en/build-with-claude/thinking, read 2026-10-22:
+    # Sonnet 5.5 rejects "disabled"; "between_tools" turns off up-front thinking.
+    client = MagicMock()
+    provider = AnthropicProvider(api_key="k", model="claude-sonnet-5-5", client=client, thinking="between_tools")
+    client.messages.create.return_value = make_message([{"type": "tool_use", "id": "t", "name": "read_file", "input": {}}])
+
+    provider.complete([{"role": "user", "content": "go"}], [READ_FILE])
+
+    assert client.messages.create.call_args.kwargs["thinking"] == {"type": "between_tools"}
+
+
+def test_between_tools_is_not_sent_to_a_model_that_rejects_it(capsys):
+    # Opus 5.5 answers "between_tools" with a 400; the setting is meant for the
+    # cheap half, and must not break the high-risk one.
+    client = MagicMock()
+    provider = AnthropicProvider(api_key="k", model="claude-opus-5-5", client=client, thinking="between_tools")
+    client.messages.create.return_value = make_message([{"type": "tool_use", "id": "t", "name": "read_file", "input": {}}])
+
+    provider.complete([{"role": "user", "content": "go"}], [READ_FILE])
+
+    assert "thinking" not in client.messages.create.call_args.kwargs
+
+
+def test_no_thinking_setting_sends_no_thinking_field():
+    provider, create = make_provider()
+    create.return_value = make_message([{"type": "tool_use", "id": "t", "name": "read_file", "input": {}}])
+    provider.complete([{"role": "user", "content": "go"}], [READ_FILE])
+    assert "thinking" not in create.call_args.kwargs

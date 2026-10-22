@@ -149,3 +149,27 @@ def test_complete_records_usage_under_the_phase_it_was_created_for():
 
     assert tracker.by_phase()["adjudication"].prompt_tokens == 700
     assert "review" not in tracker.by_phase()
+
+
+def test_a_required_tool_is_forced_by_name(provider):
+    # The last loop step demands the verdict without narrowing the tool list,
+    # which keeps the prompt prefix - and OpenAI's prompt cache - unchanged.
+    response = make_response(tool_calls=[make_tool_call("c1", "submit_findings", {"summary": "s", "findings": []})])
+    with patch.object(provider._client.chat.completions, "create", return_value=response) as mock_create:
+        provider.complete([{"role": "user", "content": "go"}], [{"type": "function"}], required_tool="submit_findings")
+
+    assert mock_create.call_args.kwargs["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "submit_findings"},
+    }
+
+
+def test_a_rejected_forced_tool_falls_back_to_auto(provider):
+    fallback_response = make_response(tool_calls=[make_tool_call("c1", "submit_findings", {})])
+    with patch.object(
+        provider._client.chat.completions, "create",
+        side_effect=[make_bad_request_error(), fallback_response],
+    ) as mock_create:
+        provider.complete([{"role": "user", "content": "go"}], [{"type": "function"}], required_tool="submit_findings")
+
+    assert mock_create.call_args_list[1].kwargs["tool_choice"] == "auto"

@@ -30,9 +30,11 @@ class FakeProvider:
         self.name = name
         self.error = error
         self.calls = 0
+        self.required = []
 
-    def complete(self, messages, tools):
+    def complete(self, messages, tools, required_tool=None):
         self.calls += 1
+        self.required.append(required_tool)
         if self.error is not None:
             raise self.error
         return ProviderResponse(tool_calls=(ToolCall(id="c", name=self.name, arguments={}),), text=None)
@@ -204,3 +206,43 @@ def test_an_openai_run_does_not_need_the_anthropic_package(monkeypatch):
     make_provider = factory.provider_factory(REPO, REPO, {"OPENAI_API_KEY": "sk"}, UsageTracker())
 
     assert type(make_provider("gpt-base")).__name__ == "OpenAIProvider"
+
+
+def test_the_required_tool_reaches_whichever_provider_answers():
+    primary = FakeProvider("claude")
+    make(primary, FakeProvider("openai")).complete([], [], required_tool="submit_findings")
+    assert primary.required == ["submit_findings"]
+
+    failing = FakeProvider("claude", error=Unavailable("401"))
+    fallback = FakeProvider("openai")
+    make(failing, fallback).complete([], [], required_tool="submit_findings")
+    assert fallback.required == ["submit_findings"]
+
+
+def test_the_switch_remembers_that_the_primary_answered():
+    # The alert step needs to tell "Claude worked" from "Claude was never asked"
+    # (a docs-only merge request makes no call at all).
+    switch = FallbackSwitch()
+    assert switch.primary_answered is False
+    make(FakeProvider("claude"), FakeProvider("openai"), switch).complete([], [])
+    assert switch.primary_answered is True
+
+
+def test_thinking_comes_from_the_environment():
+    make_provider = provider_factory(
+        SWITCHED, REPO,
+        {"ANTHROPIC_API_KEY": "ak", "OPENAI_API_KEY": "sk", "AI_REVIEW_THINKING": "between_tools"},
+        UsageTracker(),
+    )
+    assert make_provider("claude-sonnet-5-5").primary._thinking == "between_tools"
+
+
+def test_without_the_thinking_variable_the_model_default_stays():
+    make_provider = provider_factory(SWITCHED, REPO, {"ANTHROPIC_API_KEY": "ak"}, UsageTracker())
+    assert make_provider("claude-sonnet-5-5").primary._thinking is None
+
+
+def test_the_factory_uses_the_switch_it_is_given():
+    switch = FallbackSwitch()
+    make_provider = provider_factory(SWITCHED, REPO, {"ANTHROPIC_API_KEY": "ak"}, UsageTracker(), switch)
+    assert make_provider("claude-sonnet-5-5")._switch is switch

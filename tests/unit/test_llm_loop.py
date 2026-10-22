@@ -14,9 +14,11 @@ class ScriptedProvider:
     def __init__(self, responses):
         self.responses = list(responses)
         self.calls: list[list[dict]] = []
+        self.required: list[str | None] = []
 
-    def complete(self, messages, tools):
+    def complete(self, messages, tools, required_tool=None):
         self.calls.append(list(messages))
+        self.required.append(required_tool)
         if not self.responses:
             raise AssertionError("provider ran out of scripted responses")
         return self.responses.pop(0)
@@ -503,9 +505,9 @@ class ToolRecordingProvider(ScriptedProvider):
         super().__init__(responses)
         self.offered: list[list[str]] = []
 
-    def complete(self, messages, tools):
+    def complete(self, messages, tools, required_tool=None):
         self.offered.append([tool["function"]["name"] for tool in tools])
-        return super().complete(messages, tools)
+        return super().complete(messages, tools, required_tool)
 
 
 # go !340 (2026-10-08): two runs over a 40-file diff spent 25 iterations reading
@@ -528,12 +530,18 @@ def test_the_budget_follows_the_files_of_the_pass(tools):
     # 16 files -> 31 iterations: 30 reads, the 31st offers only the verdict.
     assert len(findings) == 1
     assert len(provider.offered) == 31
-    assert provider.offered[-1] == ["submit_findings"]
+    assert provider.required[-1] == "submit_findings"
 
 
-# The last iteration of the budget offers nothing but the verdict and says why,
-# so a review that read a lot ends with the findings it has instead of nothing.
-def test_the_last_iteration_offers_only_the_verdict(tools):
+# The last iteration of the budget demands the verdict and says why, so a review
+# that read a lot ends with the findings it has instead of nothing.
+#
+# It demands it through required_tool, NOT by narrowing the tool list. Until
+# 2026-10-22 the last step offered only submit_findings; on Claude a change of
+# tool definitions invalidates the whole prompt cache, so that one step was paid
+# at full input price over a ~300K-token conversation. The list stays the same,
+# the provider forces the tool where it can, and the reminder says it in words.
+def test_the_last_iteration_demands_the_verdict_without_narrowing_the_tools(tools):
     provider = ToolRecordingProvider([
         list_files_call("i1"), list_files_call("i2"), list_files_call("i3"),
         submit_call([VALID_FINDING], call_id="s1"),
@@ -541,9 +549,37 @@ def test_the_last_iteration_offers_only_the_verdict(tools):
     findings = ReviewLoop(provider, tools, max_iterations=4).run("system", "user")
 
     assert len(findings) == 1
-    assert provider.offered[-1] == ["submit_findings"]
-    assert all("submit_findings" in names and len(names) > 1 for names in provider.offered[:-1])
+    assert provider.offered[-1] == provider.offered[0]
+    assert len(provider.offered[-1]) > 1
+    assert provider.required == [None, None, None, "submit_findings"]
     assert provider.calls[-1][-1] == {"role": "user", "content": BUDGET_EXHAUSTED_REMINDER}
+
+
+# A provider that cannot force a tool (Opus/Sonnet 5.5 reject it) may still
+# reach for a read tool on the last step. It gets one more step: the read is
+# refused in its tool result, and the verdict is asked for again.
+def test_a_read_on_the_last_step_is_refused_and_the_verdict_asked_once_more(tools):
+    provider = ToolRecordingProvider([
+        list_files_call("i1"),
+        list_files_call("late-read"),
+        submit_call([VALID_FINDING], call_id="s1"),
+    ])
+    findings = ReviewLoop(provider, tools, max_iterations=2).run("system", "user")
+
+    assert len(findings) == 1
+    assert provider.required == [None, "submit_findings", "submit_findings"]
+    refused = [m for m in provider.calls[-1] if m.get("tool_call_id") == "late-read"]
+    assert refused and "submit_findings" in refused[0]["content"]
+    # The refused read was not served: nothing from the repository came back.
+    assert "<tool_result>" not in refused[0]["content"]
+
+
+def test_a_second_miss_after_the_extra_step_is_incomplete(tools):
+    provider = ToolRecordingProvider([
+        list_files_call("i1"), list_files_call("late-1"), list_files_call("late-2"),
+    ])
+    with pytest.raises(ReviewIncomplete):
+        ReviewLoop(provider, tools, max_iterations=2).run("system", "user")
 
 
 # On the last step the verdict is taken even below the investigation minimum:
@@ -555,9 +591,24 @@ def test_the_last_iteration_takes_the_verdict_without_more_reading(tools):
 
 
 def test_a_last_iteration_answered_with_text_is_still_incomplete(tools):
-    provider = ToolRecordingProvider([list_files_call("i1"), ProviderResponse(tool_calls=(), text="later")])
+    # Text on the last step gets the same one extra step as a stray read; text
+    # again after it is incomplete, as a text-only last step was before.
+    provider = ToolRecordingProvider([
+        list_files_call("i1"),
+        ProviderResponse(tool_calls=(), text="later"),
+        ProviderResponse(tool_calls=(), text="still later"),
+    ])
     with pytest.raises(ReviewIncomplete):
         ReviewLoop(provider, tools, max_iterations=2).run("system", "user")
+
+
+def test_text_on_the_last_step_then_the_verdict_is_accepted(tools):
+    provider = ToolRecordingProvider([
+        list_files_call("i1"),
+        ProviderResponse(tool_calls=(), text="later"),
+        submit_call([VALID_FINDING], call_id="s1"),
+    ])
+    assert len(ReviewLoop(provider, tools, max_iterations=2).run("system", "user")) == 1
 
 
 # Called without changed_files and without max_iterations -- how a caller that
@@ -568,5 +619,5 @@ def test_without_a_file_count_the_pass_keeps_the_base_budget(tools):
     findings = ReviewLoop(provider, tools).run("system", "user")
     assert len(findings) == 1
     assert len(provider.offered) == 25
-    assert provider.offered[-1] == ["submit_findings"]
-    assert all(len(names) > 1 for names in provider.offered[:-1])
+    assert provider.required[-1] == "submit_findings"
+    assert all(required is None for required in provider.required[:-1])
