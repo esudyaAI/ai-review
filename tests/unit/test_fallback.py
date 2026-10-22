@@ -181,3 +181,26 @@ def test_real_anthropic_unavailability_errors_trip_the_fallback(capsys):
         provider.primary = FakeProvider("claude", error=error)
         provider._make_fallback = lambda: FakeProvider("openai")
         assert provider.complete([], []).tool_calls[0].name == "openai"
+
+
+def test_an_openai_run_does_not_need_the_anthropic_package(monkeypatch):
+    # In this repository the ai-review job runs the branch's reviewer/ on top of
+    # the released image's dependencies. A branch that adds a dependency is
+    # therefore reviewed by an image without it - !36 died on its own gate with
+    # "No module named 'anthropic'", and exit 1, which reads as findings. Every
+    # repository still on OpenAI would hit the same if the image lagged.
+    import importlib
+    import sys
+
+    for name in list(sys.modules):
+        if name == "anthropic" or name.startswith("anthropic.") or name in (
+            "reviewer.llm.factory",
+            "reviewer.llm.anthropic_provider",
+        ):
+            monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setitem(sys.modules, "anthropic", None)  # any import of it fails
+
+    factory = importlib.import_module("reviewer.llm.factory")
+    make_provider = factory.provider_factory(REPO, REPO, {"OPENAI_API_KEY": "sk"}, UsageTracker())
+
+    assert type(make_provider("gpt-base")).__name__ == "OpenAIProvider"
