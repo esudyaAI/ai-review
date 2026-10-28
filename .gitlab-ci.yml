@@ -17,8 +17,11 @@ include:
     #    merge request that fixes it, and restore it in the same merge request
     #    once green. That is a visible, reviewable act - unlike a permanent
     #    exemption, which is invisible.
+    # judgeai: shadow mode until OPENAI_API_KEY / ANTHROPIC_API_KEY and
+    # AI_REVIEW_GITLAB_TOKEN are set as CI variables of the judgeai group.
+    # Switch back to false in the merge request that confirms the first green run.
     inputs:
-      allow_failure: false
+      allow_failure: true
 
 # Without this block a push to a branch with an open merge request builds two
 # pipelines for the same commit, and only one of them is the one the merge

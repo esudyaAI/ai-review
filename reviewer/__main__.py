@@ -27,7 +27,7 @@ from reviewer.llm.usage import (
     merge_loop_stats,
     report_lines,
 )
-from reviewer.prompt_builder import build_system_prompt, build_user_prompt
+from reviewer.prompt_builder import build_system_prompt, build_user_prompt, read_project_rules
 from reviewer.reads import encode_marker
 from reviewer.testlayout import describe_test_layout, detect_test_globs
 from reviewer.tools import RepoTools
@@ -186,7 +186,7 @@ def review(config, repo: Path, client, make_reviewer, adjudicator, mr_iid: int, 
         return EXIT_CLEAN
 
     try:
-        claude_md = (repo / "CLAUDE.md").read_text(encoding="utf-8") if (repo / "CLAUDE.md").exists() else ""
+        claude_md = read_project_rules(repo)
         findings = list(run_deterministic(repo, mr.changed_files))
         # Each half of the diff is reviewed by the model its own risk deserves.
         # Routing per merge request instead of per file meant one auth file made
