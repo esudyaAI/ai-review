@@ -1,6 +1,10 @@
-# jobbytime-ai-review
+# judgeai/ai-review
 
-AI-ревьюер merge request'ов для репозиториев группы Jobbytime.
+AI-ревьюер merge request'ов проекта «Цифровой судья» (judgeai/judgeai).
+Копия jobbytime.com-group/jobbytime-ai-review (форк от 28.10.2026), адаптированная под judgeAI:
+системный промпт описывает наш проект, правила читаются из CLAUDE.md и AGENTS.md, образ собирается
+в registry.gitlab.com/judgeai/ai-review. Подключение: `include: project: judgeai/ai-review`,
+`ref: main`, `file: templates/ai-review.yml`. Ниже — исходная документация инструмента.
 
 ## Как подключить
 

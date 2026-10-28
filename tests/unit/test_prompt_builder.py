@@ -16,6 +16,23 @@ def test_system_prompt_contains_rules_and_project_conventions():
     assert "Комментарии в коде только по-английски." in prompt
 
 
+def test_project_rules_come_from_claude_md_and_agents_md(tmp_path):
+    from reviewer.prompt_builder import read_project_rules
+
+    assert read_project_rules(tmp_path) == ""
+    (tmp_path / "AGENTS.md").write_text("Migrations need a downgrade.", encoding="utf-8")
+    assert read_project_rules(tmp_path) == "# AGENTS.md\nMigrations need a downgrade."
+    (tmp_path / "CLAUDE.md").write_text("Comments in English.", encoding="utf-8")
+    rules = read_project_rules(tmp_path)
+    assert rules.index("Comments in English.") < rules.index("Migrations need a downgrade.")
+
+
+def test_system_prompt_names_this_project():
+    prompt = build_system_prompt("", "Тесты: test_*.py")
+    assert "«Цифровой судья»" in prompt
+    assert "Jobbytime" not in prompt and "Stripe" not in prompt
+
+
 def test_system_prompt_survives_missing_claude_md():
     prompt = build_system_prompt("", "Тесты: test_*.py")
     assert "submit_findings" in prompt
